@@ -47,11 +47,13 @@
 │  ├─ preload.js          contextBridge 暴露面
 │  ├─ renderer/           index.html / renderer.js / renderers.js / styles.css / skins.css …
 │  ├─ scenarios/          四场景 json + _模板-网页面板.json + _场景身份索引.md
+│  ├─ skins/              外部皮肤（deepsea / sunset，契约见 §三.3）
 │  └─ scripts/            建会话 / 换会话 / 归档 / 刷新面板 / 自检 / CDP 诊断
 ├─ 工具/                  独立 node 脚本（不依赖 Electron）
 │  ├─ 引擎常驻.mjs        status | start | stop | restart | token
-│  ├─ 记忆同步.mjs        把引擎真实会话数据同步进场景记忆
-│  └─ 场景记忆.mjs / 发消息.mjs / 封装.mjs / 发布前检查.mjs
+│  ├─ 记忆同步.mjs        把引擎真实工作区/会话/标题/摘要同步进场景记忆
+│  ├─ 接口体检.mjs        探 dsh 的 /api rpc 哪些真能用（含写链路）
+│  └─ 场景记忆.mjs / 发消息.mjs / 封装.mjs / 发布前检查.mjs / 同步仓库.mjs
 ├─ keepalive/             watchdog.ps1（30s 判活）+ 开机自启 vbs
 ├─ 说明/                  使用说明.md / 记忆约定.md
 └─ 启动.vbs + launch-inner.cmd   双击即起的启动链路

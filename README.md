@@ -155,6 +155,21 @@
 
 想只看外观、不想装依赖：`11-最小可运行壳/` 是零依赖单文件 demo。
 
+### 改了本地代码，怎么进这个仓库
+
+本地在跑的是 `D:\AAAlingmindu_wb`（混着引擎数据、data、备份、node_modules，整目录不能 push），仓库是它的一份源码镜像。
+一条命令同步（默认干跑，只报差异）：
+
+```powershell
+node 工具\同步仓库.mjs                      # 干跑：新增 / 修改 / 删除 各几个
+node 工具\同步仓库.mjs --push "改了什么"     # 真同步 + commit + push
+```
+
+它只搬该进版本控制的部分（`外壳/` `工具/` `keepalive/` `说明/` `插件/` + 启动脚本），
+自动跳过 `data/` `captures/` `node_modules/` `*.bak-*` `*.log` 和两个启动动画 mp4，并删掉仓库里已经不该存在的文件。
+仓库 clone 默认认 `D:\git\lingmindu-workbench`，可用 `--repo` 或环境变量 `WB_REPO` 指定。
+直连 github.com 超时的机器先设一次代理：`git config --global http.https://github.com.proxy http://127.0.0.1:7890`。
+
 ---
 
 ## 五、后续往里融什么

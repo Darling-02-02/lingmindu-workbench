@@ -54,11 +54,25 @@ contextBridge.exposeInMainWorld('app', {
   getScenario: (id) => ipcRenderer.invoke('scenario:get', id),
   // 面板编辑（2026-11-25）：只写 scenarios/<id>.json 的 panels，主进程负责校验/夹取/备份
   saveScenarioPanels: (id, panels) => ipcRenderer.invoke('scenario:save-panels', id, panels),
+  // 每日计划（2026-11-25）：文件 = <DSH_DATA_DIR>\场景记忆\_共享记忆\每日计划.json
+  // 命令行同源入口：node 工具\每日计划.mjs（--add / --done / --week / --seed）
+  plan: {
+    read: () => ipcRenderer.invoke('plan:read'),
+    save: (plan) => ipcRenderer.invoke('plan:save', plan),
+    toggle: (id, day) => ipcRenderer.invoke('plan:toggle', id, day),
+    remove: (id) => ipcRenderer.invoke('plan:remove', id),
+    openFile: () => ipcRenderer.invoke('plan:open-file')
+  },
   // 皮肤（2026-11-25）：扫 外壳\skins\<id>\skin.json（对齐 dsh 皮肤契约），换背景 + 换窗口图标
   skins: {
     list: () => ipcRenderer.invoke('skins:list'),
     base: () => ipcRenderer.invoke('skins:base'),
-    applyIcon: (id) => ipcRenderer.invoke('skins:apply-icon', id)
+    applyIcon: (id) => ipcRenderer.invoke('skins:apply-icon', id),
+    // 自定义背景图（2026-11-25）：弹系统文件框选图 → 复制进 外壳\skins\_user\bg.<ext>
+    getBg: () => ipcRenderer.invoke('skins:get-bg'),
+    pickBg: () => ipcRenderer.invoke('skins:pick-bg'),
+    setBgOpacity: (v) => ipcRenderer.invoke('skins:set-bg-opacity', v),
+    clearBg: () => ipcRenderer.invoke('skins:clear-bg')
   },
   // ---- 设置：读取 / 打开 Harness 配置文件 ----
   settings: {

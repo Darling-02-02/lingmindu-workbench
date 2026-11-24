@@ -54,3 +54,10 @@ html[data-skin] #grid::-webkit-scrollbar-thumb:hover { background: var(--accent)
 html[data-skin-bg="1"] { background: var(--bg); }
 html[data-skin-bg="1"] body { background: transparent; }
 html[data-skin-bg="1"] #scenebar { background: color-mix(in srgb, var(--bg-panel) 78%, transparent); }
+
+/* 用户自选背景图（2026-11-25）：用户传的图优先于皮肤自带背景；面板再透一档，否则被不透明的 --bg-panel 全挡住 */
+html[data-skin-userbg="1"] .titlebar,
+html[data-skin-userbg="1"] #scenebar,
+html[data-skin-userbg="1"] #topbar-status { background: color-mix(in srgb, var(--bg-panel) 68%, transparent); }
+html[data-skin-userbg="1"] .panel,
+html[data-skin-userbg="1"] .pane { background: color-mix(in srgb, var(--bg-panel) 84%, transparent); }

@@ -1536,6 +1536,77 @@ ipcMain.handle('skins:apply-icon', (e, skinId) => {
   try { w.setIcon(want); } catch (err) { return { ok: false, err: String(err.message || err) }; }
   return { ok: true, icon: want };
 });
+// ---- 自定义背景图（用户自己上传，2026-11-25）----
+// 存放：外壳\skins\_user\bg.<ext>；配置：外壳\skins\_user\bg.json（{file,name,opacity,updatedAt}）
+// `_` 前缀 ⇒ listSkins() 会跳过，不会被当成一套皮肤；皮肤和它互不覆盖：用户背景图优先级更高。
+const USER_SKIN_DIR = path.join(SKINS_DIR, '_user');
+function userBgConf() { return path.join(USER_SKIN_DIR, 'bg.json'); }
+function readUserBg() {
+  try {
+    const j = JSON.parse(fs.readFileSync(userBgConf(), 'utf8').replace(/^\uFEFF/, ''));
+    const f = (j && j.file) ? path.join(USER_SKIN_DIR, String(j.file)) : '';
+    if (!f || !fs.existsSync(f)) return null;
+    const op = Number(j.opacity);
+    return {
+      url: fileUrl(f), file: f, name: String(j.name || path.basename(f)),
+      opacity: Number.isFinite(op) ? Math.max(0.05, Math.min(1, op)) : 0.55,
+    };
+  } catch (e) { return null; }
+}
+function writeUserBg(obj) {
+  try {
+    fs.mkdirSync(USER_SKIN_DIR, { recursive: true });
+    fs.writeFileSync(userBgConf(), JSON.stringify(obj, null, 2), 'utf8');
+    return true;
+  } catch (e) { log('[skin] 写 bg.json 失败：' + (e && e.message)); return false; }
+}
+ipcMain.handle('skins:get-bg', () => readUserBg() || { none: true });
+ipcMain.handle('skins:pick-bg', async (e) => {
+  const w = BrowserWindow.fromWebContents(e.sender) || null;
+  let r = null;
+  try {
+    r = await dialog.showOpenDialog(w, {
+      title: '选一张背景图',
+      buttonLabel: '就用这张',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] }],
+    });
+  } catch (err) { return { ok: false, err: String(err.message || err) }; }
+  if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+  const src = r.filePaths[0];
+  const ext = ((path.extname(src) || '.png')).toLowerCase();
+  try {
+    fs.mkdirSync(USER_SKIN_DIR, { recursive: true });
+    const want = 'bg' + ext;
+    for (const f of fs.readdirSync(USER_SKIN_DIR)) {         // 只留一张，别越堆越多
+      if (/^bg\./i.test(f) && f.toLowerCase() !== want) { try { fs.unlinkSync(path.join(USER_SKIN_DIR, f)); } catch (er) { /* 占用中也无所谓 */ } }
+    }
+    const dst = path.join(USER_SKIN_DIR, want);
+    fs.copyFileSync(src, dst);
+    const prev = readUserBg();
+    const op = prev ? prev.opacity : 0.55;
+    writeUserBg({ file: want, name: path.basename(src), opacity: op, updatedAt: new Date().toISOString() });
+    log('[skin] 背景图换成：' + src + ' ⇒ ' + dst);
+    return { ok: true, url: fileUrl(dst), name: path.basename(src), opacity: op };
+  } catch (err) { return { ok: false, err: String(err.message || err) }; }
+});
+ipcMain.handle('skins:set-bg-opacity', (e, v) => {
+  const cur = readUserBg();
+  if (!cur) return { ok: false, err: '还没有背景图' };
+  const op = Math.max(0.05, Math.min(1, Number(v) || 0.55));
+  writeUserBg({ file: path.basename(cur.file), name: cur.name, opacity: op, updatedAt: new Date().toISOString() });
+  return { ok: true, opacity: op };
+});
+ipcMain.handle('skins:clear-bg', () => {
+  try {
+    if (fs.existsSync(USER_SKIN_DIR)) {
+      for (const f of fs.readdirSync(USER_SKIN_DIR)) {
+        if (/^bg(\.|$)/i.test(f) || f === 'bg.json') { try { fs.unlinkSync(path.join(USER_SKIN_DIR, f)); } catch (er) { /* ignore */ } }
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return { ok: true };
+});
 // 场景标签顺序（拖拽换位）：渲染层拖完报上来，下次开机 / 其它窗口都读它
 ipcMain.handle('scenes:order:get', () => ({ saved: fs.existsSync(SCENE_ORDER_FILE), ids: readSceneTabOrder() }));
 ipcMain.handle('scenes:order:set', (e, ids) => saveSceneTabOrder(ids));
@@ -3839,6 +3910,96 @@ const PLUGINS_DIR = path.join(HARNESS_DIR, '插件');
 const DSH_DATA_DIR = process.env.DSH_CUSTOMER_HOME || process.env.DSH_HOME || path.join(HARNESS_DIR, '.dsh');
 const SETTINGS_PATH = path.join(DSH_DATA_DIR, 'settings.yaml');
 
+// ---- 每日计划（2026-11-25）----
+// 文件：<DSH_DATA_DIR>\场景记忆\_共享记忆\每日计划.json —— 和命令行入口 工具\每日计划.mjs 同一个文件、同一套格式。
+// 面板只做"看 + 勾 + 加 + 删"，复杂操作（--week / --seed / 批量）走命令行，避免两边规则各写一份。
+const PLAN_FILE = path.join(DSH_DATA_DIR, '场景记忆', '_共享记忆', '每日计划.json');
+function planPad(n) { return String(n).padStart(2, '0'); }
+function planDateKey(d) { return d.getFullYear() + '-' + planPad(d.getMonth() + 1) + '-' + planPad(d.getDate()); }
+function planRead() {
+  try {
+    const j = JSON.parse(fs.readFileSync(PLAN_FILE, 'utf8').replace(/^\uFEFF/, ''));
+    if (!j || !Array.isArray(j.items)) return { version: 1, items: [] };
+    return j;
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') log('[plan] 读不了 ' + PLAN_FILE + '：' + (e && e.message));
+    return { version: 1, items: [] };
+  }
+}
+function planWrite(plan) {
+  plan.updatedAt = new Date().toISOString();
+  try {
+    fs.mkdirSync(path.dirname(PLAN_FILE), { recursive: true });
+    if (fs.existsSync(PLAN_FILE)) {
+      const bak = PLAN_FILE + '.bak-plan-' + new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      try { fs.copyFileSync(PLAN_FILE, bak); } catch (e) { /* 备份失败不挡写 */ }
+    }
+    fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + '\n', 'utf8');
+    return { ok: true, file: PLAN_FILE };
+  } catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
+}
+function planSanitize(items) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(items) ? items : []).forEach((it, i) => {
+    if (!it || typeof it !== 'object') return;
+    const title = String(it.title || '').trim();
+    if (!title) return;
+    let id = String(it.id || '').trim() || ('p' + (i + 1));
+    id = id.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || ('p' + (i + 1));
+    while (seen.has(id)) id = id + 'x';
+    seen.add(id);
+    const kind = ['routine', 'project', 'once'].indexOf(String(it.kind)) >= 0 ? String(it.kind) : 'routine';
+    const time = /^\d{1,2}:\d{2}$/.test(String(it.time || '')) ? String(it.time) : '';
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(String(it.due || '')) ? String(it.due) : '';
+    const days = Array.isArray(it.days) ? it.days.map(Number).filter((n) => n >= 1 && n <= 7) : [];
+    out.push({
+      id, title, time, days, kind, due,
+      note: String(it.note || '').slice(0, 500),
+      since: /^\d{4}-\d{2}-\d{2}$/.test(String(it.since || '')) ? String(it.since) : '',
+      until: /^\d{4}-\d{2}-\d{2}$/.test(String(it.until || '')) ? String(it.until) : '',
+      logs: (it.logs && typeof it.logs === 'object') ? it.logs : {},
+    });
+  });
+  return out;
+}
+ipcMain.handle('plan:read', () => {
+  const plan = planRead();
+  return { ok: true, file: PLAN_FILE, exists: fs.existsSync(PLAN_FILE), today: planDateKey(new Date()), plan };
+});
+ipcMain.handle('plan:save', (e, plan) => {
+  const p = planRead();
+  p.items = planSanitize(plan && plan.items);
+  const r = planWrite(p);
+  if (r.ok) log('[plan] 已保存 ' + p.items.length + ' 条：' + PLAN_FILE);
+  return r;
+});
+// 勾选/取消今天的完成状态（面板点一下走这里，不重写整个文件）
+ipcMain.handle('plan:toggle', (e, id, day) => {
+  const p = planRead();
+  const it = (p.items || []).filter((x) => String(x.id) === String(id))[0];
+  if (!it) return { ok: false, err: '没有这条：' + id };
+  const k = /^\d{4}-\d{2}-\d{2}$/.test(String(day || '')) ? String(day) : planDateKey(new Date());
+  it.logs = it.logs || {};
+  it.logs[k] = it.logs[k] || {};
+  it.logs[k].done = !it.logs[k].done;
+  it.logs[k].at = new Date().toISOString();
+  const r = planWrite(p);
+  return r.ok ? { ok: true, id, day: k, done: !!it.logs[k].done } : r;
+});
+ipcMain.handle('plan:remove', (e, id) => {
+  const p = planRead();
+  const before = (p.items || []).length;
+  p.items = (p.items || []).filter((x) => String(x.id) !== String(id));
+  if (p.items.length === before) return { ok: false, err: '没有这条：' + id };
+  const r = planWrite(p);
+  return r.ok ? { ok: true, id } : r;
+});
+ipcMain.handle('plan:open-file', () => {
+  try { if (!fs.existsSync(PLAN_FILE)) planWrite(planRead()); shell.showItemInFolder(PLAN_FILE); return { ok: true, file: PLAN_FILE }; }
+  catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
+});
+
 // 已安装插件清单：扫描 dsh 项目的「插件」目录（每个子目录一个插件，含 package.json 元信息）
 ipcMain.handle('plugins:list', () => {
   const out = {
@@ -4996,6 +5157,8 @@ app.whenReady().then(async function () {
 //   （partition=persist:webai-<key>，登录态在那儿），主进程碰不到它的 DOM —— 所以必须借渲染层的手。
 // 安全：只监听 127.0.0.1，不对外；claim 机制保证多窗口时只有一个窗口干活（不会问两遍）。
 const WEB_AI_PORT = Number(process.env.WEB_AI_PORT || 31239);
+// 见文件末尾 listen 处的说明：true = 整套「接免费 AI」不启动（不监听端口、不生成顶栏图标）。
+const WEB_AI_DISABLED = true;
 const WEB_AI_KEYS = [
   { key: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/' },
   { key: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat/' },
@@ -5271,6 +5434,13 @@ setInterval(function () {
   } catch (e) { /* 命令文件忙/损坏都不致命，下一轮再试 */ }
 }, 500);
 
-webAiServer.listen(WEB_AI_PORT, '127.0.0.1', function () {
-  log('[webai] 网页版 AI 桥已就绪: http://127.0.0.1:' + WEB_AI_PORT + '/webai/keys（会话可用 scripts\\webai.mjs 问免费网页版）');
-});
+// 2026-11-25 下线「接免费 AI」：桥服务不再监听 31239（顶栏那排图标同时在 renderers.js 里关掉）。
+//   理由：用户这边能多开会话窗口，5 个常驻网页端 AI 只是占 CPU/内存；之前 31239 还常报 EADDRINUSE。
+//   想恢复：把这里和 renderer\renderers.js 的 WEB_AI_DISABLED 一起改回 false，重启壳。
+if (!WEB_AI_DISABLED) {
+  webAiServer.listen(WEB_AI_PORT, '127.0.0.1', function () {
+    log('[webai] 网页版 AI 桥已就绪: http://127.0.0.1:' + WEB_AI_PORT + '/webai/keys（会话可用 scripts\\webai.mjs 问免费网页版）');
+  });
+} else {
+  log('[webai] 已按设置下线：桥服务不监听 ' + WEB_AI_PORT + '，顶栏图标也不生成');
+}

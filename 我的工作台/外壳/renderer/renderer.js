@@ -811,11 +811,27 @@ function ensureSkinBgLayer() {
   }
   return lay;
 }
+// ---- 自定义背景图（2026-11-25）----
+// 图存在 外壳\skins\_user\bg.<ext>，由主进程（skins:pick-bg）管；这里只管"谁占据背景层"：
+//   用户自选图 > 皮肤自带的 background > 什么都没有。
+let USER_BG = null;   // { url, name, opacity }
+function refreshBgLayer(sk) {
+  const lay = ensureSkinBgLayer();
+  const src = USER_BG ? USER_BG.url : ((sk && sk.background) ? sk.background : '');
+  const op = USER_BG ? USER_BG.opacity : ((sk && sk.background) ? sk.backgroundOpacity : 0);
+  lay.style.backgroundImage = src ? 'url("' + src + '")' : '';
+  lay.style.opacity = src ? String(op) : '0';
+  document.documentElement.setAttribute('data-skin-bg', src ? '1' : '0');
+  document.documentElement.setAttribute('data-skin-userbg', USER_BG ? '1' : '0');
+}
+function applyUserBg(bg) {
+  USER_BG = (bg && bg.url) ? { url: bg.url, name: bg.name || '', opacity: Number(bg.opacity) || 0.55 } : null;
+  refreshBgLayer(extSkinOf(currentSkin()));
+}
 // 把「外部皮肤」落到页面：清掉上一个的 bodyAttr / link / 背景 / 变量，再挂新的。
 // 内置 5 套配色不走这里（它们在 skins.css 里，靠 html[data-skin]）。
 function applyExtSkin(sk) {
   const lay = ensureSkinBgLayer();
-  document.documentElement.setAttribute('data-skin-bg', sk && sk.background ? '1' : '0');
   // 1) bodyAttr：和 dsh 皮肤插件同一套（body[data-dsh-xxx]）
   EXT_SKINS.forEach((s) => { if (s.bodyAttr) { try { document.body.removeAttribute(s.bodyAttr); } catch (e) { } } });
   if (sk && sk.bodyAttr) { try { document.body.setAttribute(sk.bodyAttr, ''); } catch (e) { } }
@@ -832,8 +848,7 @@ function applyExtSkin(sk) {
     extSkinLinks[sk.id] = link;
   }
   // 3) 背景图 + 4) 变量覆盖
-  lay.style.backgroundImage = (sk && sk.background) ? 'url("' + sk.background + '")' : '';
-  lay.style.opacity = (sk && sk.background) ? String(sk.backgroundOpacity) : '0';
+  refreshBgLayer(sk);   // 用户自选背景图存在时它优先，皮肤自带 background 让位
   const rootStyle = document.documentElement.style;
   if (window.__skinVarKeys) { window.__skinVarKeys.forEach((k) => rootStyle.removeProperty(k)); window.__skinVarKeys = []; }
   if (sk && sk.vars) {
@@ -934,6 +949,53 @@ function initTheme() {
         menu.appendChild(b);
       });
     }
+    // ---- 自定义背景图（2026-11-25）：弹系统文件框选图，选完即时铺到窗口最底层 ----
+    menu.appendChild(mkEl('div', 'theme-sep'));
+    menu.appendChild(mkEl('div', 'theme-group', '背景图'));
+    {
+      const bPick = mkEl('button', 'theme-item');
+      bPick.appendChild(mkEl('span', 'theme-item-ico', '🖼'));
+      bPick.appendChild(mkEl('span', 'theme-item-txt', USER_BG ? '换一张图片…' : '上传一张图片…'));
+      if (USER_BG && USER_BG.name) bPick.title = '当前背景：' + USER_BG.name;
+      bPick.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!window.app || !window.app.skins || !window.app.skins.pickBg) return;
+        window.app.skins.pickBg().then((r) => {
+          if (!r || !r.ok) { if (r && r.err) console.warn('[skin] 选背景图失败：', r.err); return; }
+          applyUserBg({ url: r.url, name: r.name, opacity: r.opacity });
+          closeMenu();
+        }).catch(() => { });
+      });
+      menu.appendChild(bPick);
+      if (USER_BG) {
+        const bOp = mkEl('button', 'theme-item');
+        bOp.appendChild(mkEl('span', 'theme-item-ico', '◐'));
+        const opTxt = mkEl('span', 'theme-item-txt', '浓淡：' + Math.round(USER_BG.opacity * 100) + '%');
+        bOp.appendChild(opTxt);
+        bOp.title = '点一下换一档：25% / 45% / 65% / 85%';
+        bOp.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const steps = [0.25, 0.45, 0.65, 0.85];
+          let next = steps[0];
+          for (let i = 0; i < steps.length; i++) if (USER_BG.opacity >= steps[i] - 0.02) next = steps[(i + 1) % steps.length];
+          USER_BG.opacity = next;
+          refreshBgLayer(extSkinOf(currentSkin()));
+          opTxt.textContent = '浓淡：' + Math.round(next * 100) + '%';
+          if (window.app && window.app.skins && window.app.skins.setBgOpacity) window.app.skins.setBgOpacity(next);
+        });
+        menu.appendChild(bOp);
+        const bClr = mkEl('button', 'theme-item');
+        bClr.appendChild(mkEl('span', 'theme-item-ico', '✕'));
+        bClr.appendChild(mkEl('span', 'theme-item-txt', '去掉背景图'));
+        bClr.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          if (window.app && window.app.skins && window.app.skins.clearBg) window.app.skins.clearBg();
+          applyUserBg(null);
+          closeMenu();
+        });
+        menu.appendChild(bClr);
+      }
+    }
     document.body.appendChild(menu);
     const r = btn.getBoundingClientRect();
     menu.style.top = (r.bottom + 5) + 'px';
@@ -949,12 +1011,18 @@ function initTheme() {
   const onSys = () => { if (currentThemeMode() === 'system') applyTheme('system'); };
   if (mq.addEventListener) mq.addEventListener('change', onSys);
   else if (mq.addListener) mq.addListener(onSys);
-  // 外部皮肤清单先到手，再落主题 —— 否则 localStorage 里存的是皮肤 id 时会被当成内置色、闪回默认蓝。
+  // 外部皮肤清单 + 用户背景图先到手，再落主题 —— 否则 localStorage 里存的是皮肤 id 时会被当成内置色、闪回默认蓝。
   const boot = (window.app && window.app.skins && window.app.skins.list)
     ? window.app.skins.list().catch(() => [])
     : Promise.resolve([]);
-  boot.then((list) => {
+  const bootBg = (window.app && window.app.skins && window.app.skins.getBg)
+    ? window.app.skins.getBg().catch(() => null)
+    : Promise.resolve(null);
+  Promise.all([boot, bootBg]).then((pr) => {
+    const list = pr[0];
+    const bg = pr[1];
     EXT_SKINS = Array.isArray(list) ? list : [];
+    if (bg && bg.url) USER_BG = { url: bg.url, name: bg.name || '', opacity: Number(bg.opacity) || 0.55 };
     applyTheme(currentThemeMode());
   });
 }

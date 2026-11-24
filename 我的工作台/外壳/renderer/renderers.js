@@ -2836,6 +2836,9 @@ var FLOW_TYPES = [
       + '这个节点连到内容节点上，就是在告诉 AI 会话：这一步用 Kimi 做。',
     tip: '免费网页版 Kimi（顶栏同款窗口，同一个登录态、不花 API token）：双击打开'
   },
+  // ★2026-11-25★ 「接免费 AI」下线：上面那 5 个 webai 节点在下面 FLOW_TYPES 定义完之后被 filter 掉，
+  //   代码留着（想恢复把 WEB_AI_DISABLED 改回 false 即可）。别在这里直接删条目 —— 节点 id 被存进用户的流程图里，
+  //   删了老图会留一堆找不到类型的空白节点；filter 掉则只是"新图不再提供这个类型"。
   // ★2026-09-26★ 「项目文件夹」（用户点名：加一个文件夹节点叫项目文件夹、双击打开所在文件夹；
   //   "一般情况下跑一整个工作流都在一个文件夹，方便任务查看以及继续"）。归类 = 位置节点（FLOW_CATS 的 place）。
   //   端口开在**上下**：它不参加主线时序（别跟 seq 混在一起），往下连到产物节点 = "这些东西都在这个文件夹里"。
@@ -2854,6 +2857,14 @@ var FLOW_TYPES = [
     tip: '一个项目文件夹：双击在预览面板里摊开（里面的图片/视频可直接看/播）；一条工作流的全部产物都放里面'
   }
 ];
+// ★2026-11-25 用户下线「接免费 AI」的总开关★（原话：「我能多开会话窗口，要这些免费的网页端 ai 更是累赘」）
+//   一处定义、三处生效：①这里把 5 个 webai 节点类型从新图里摘掉 ②下面 decorateWebAi() 不再生成顶栏那排图标
+//   ③主进程 main.js 的 WEB_AI_DISABLED 让 31239 桥服务不监听。
+//   ⚠ 必须定义在文件靠前处：FLOW_TYPES 的过滤在下面几行就要用，`var` 提升只能带声明不能带值，
+//     写到 WEB_AI 表那边（文件末尾）会让这里的判断永远是 undefined ⇒ 开关失效。
+var WEB_AI_DISABLED = true;
+if (WEB_AI_DISABLED) FLOW_TYPES = FLOW_TYPES.filter(function (t) { return t.kind !== 'webai'; });
+// 想恢复：把上面这一行改回 false（main.js 那个同名常量一起改），再点 ⟳。
 function flowType(id) {
   for (var i = 0; i < FLOW_TYPES.length; i++) if (FLOW_TYPES[i].id === id) return FLOW_TYPES[i];
   return FLOW_TYPES[0];
@@ -11776,6 +11787,9 @@ function decorateBrand() {
 //   左下角那个 DeepSeek 面板（面板 id `sr-site-bl`，同一个 chat.deepseek.com）**是同一个 webview 分区**
 //   ⇒ 登录态/会话完全**联通**：在场景面板里登录过，顶栏点开就是登录好的，反过来也一样。
 //   不是"两套各登一次"；也别把这个分区名改掉 —— 改了两边同时掉登录。
+// ★2026-11-25 用户下线「接免费 AI」★（原话：「我能多开会话窗口，要这些免费的网页端 ai 更是累赘」）：
+//   顶栏那排图标不再生成、桥服务不再监听端口（main.js 的 WEB_AI_DISABLED），代码留着但永不激活。
+//   开关 `WEB_AI_DISABLED` 定义在文件靠前的 FLOW_TYPES 数组之后（那里要用来摘节点类型，见那边的注释）。
 var WEB_AI = [
   { key: 'deepseek', name: 'DeepSeek', icon: 'assets/webai/deepseek.png', fallback: 'D',
     url: 'https://chat.deepseek.com/', partition: 'persist:embed-sr-site-bl',
@@ -12168,6 +12182,14 @@ function webAiMarkOn() {
 
 // 顶栏那五个图标（插在「灵敏度加满家的大肥鱼」字段后面；✕ 幂等：⟳ 重跑不会插第二排）
 function decorateWebAi() {
+  // 2026-11-25 下线「接免费 AI」：不生成那排图标；已经插过的（⟳ 之前的老页面）顺手摘掉。
+  if (WEB_AI_DISABLED) {
+    try {
+      const old = document.getElementById('webai-strip');
+      if (old) old.remove();   // 已开的小窗是 .webai-layer 里的独立 div，整页刷新就没了，不必逐个关
+    } catch (e) { /* ignore */ }
+    return;
+  }
   try {
     const drag = document.querySelector('#titlebar .titlebar-drag');
     const brand = document.querySelector('#titlebar .brand');
@@ -17997,10 +18019,13 @@ renderers.neuron = (body, meta, head) => {
     var pre = (window.app && window.app.memorySync)
       ? window.app.memorySync().catch(function () { return null; })
       : Promise.resolve(null);
-    return pre.then(function () { return Promise.all([readText(ROOT + '\\索引.json'), readText(ROOT + '\\项目.json'), readText(ROOT + '\\记忆地图.json')]); }).then(function (both) {
+    return pre.then(function () { return Promise.all([readText(ROOT + '\\索引.json'), readText(ROOT + '\\项目.json'), readText(ROOT + '\\记忆地图.json'), readText(ROOT + '\\每日计划.json')]); }).then(function (both) {
       var txt = both && both[0];
       var projTxt = (both && both[1]) || '';
       var mapTxt = (both && both[2]) || '';
+      var planTxt = (both && both[3]) || '';
+      var planDoc = null;
+      try { planDoc = planTxt ? JSON.parse(planTxt) : null; } catch (e) { planDoc = null; }
       var memMap = null;
       try { memMap = mapTxt ? JSON.parse(mapTxt) : null; } catch (e) { memMap = null; }
       var memByPanel = {};
@@ -18153,6 +18178,52 @@ renderers.neuron = (body, meta, head) => {
             });
             edges.push({ a: wid, b: sid, kind: 'source' });
           });
+        });
+      }
+
+      // 每日计划（2026-11-25，宿主：「每天固定时间都有一些固定计划，或者是我自己要完成的一些项目，
+      //   这个也可以写到神经元中」）—— 数据 = _共享记忆\每日计划.json，和 工具\每日计划.mjs 是同一个文件。
+      // 复用现成的 memory 节点类型（不新增布局/图例分支，零风险）：一个汇总点 + 每个今日项一个点。
+      if (planDoc && planDoc.items && planDoc.items.length) {
+        var pd = new Date();
+        var pKey = pd.getFullYear() + '-' + String(pd.getMonth() + 1).padStart(2, '0') + '-' + String(pd.getDate()).padStart(2, '0');
+        var pDow = pd.getDay() === 0 ? 7 : pd.getDay();
+        var pTime = function (it) { return /^\d{1,2}:\d{2}$/.test(String(it.time || '')) ? String(it.time).padStart(5, '0') : '99:99'; };
+        var pList = planDoc.items.filter(function (it) {
+          if (!it || !it.title) return false;
+          if (it.since && it.since > pKey) return false;      // 还没开始
+          if (it.until && it.until < pKey) return false;      // 已经结束
+          var ddone = !!(it.logs && it.logs[pKey] && it.logs[pKey].done);
+          var kd = it.kind || 'routine';
+          if (kd === 'project') return !ddone;               // 项目没做完就一直出现
+          var ds = Array.isArray(it.days) ? it.days.map(Number).filter(function (n) { return n >= 1 && n <= 7; }) : [];
+          if (!ds.length) return true;                       // 空 = 每天
+          return ds.indexOf(pDow) >= 0;
+        }).sort(function (a, b) { return pTime(a) < pTime(b) ? -1 : (pTime(a) > pTime(b) ? 1 : 0); });
+        var pDone = pList.filter(function (it) { return !!(it.logs && it.logs[pKey] && it.logs[pKey].done); }).length;
+        nodes.push({
+          id: 'plan',
+          label: '今日计划 ' + pList.length + ' 项·完成 ' + pDone,
+          kind: 'memory', group: 'memory',
+          path: pList.length
+            ? pList.map(function (it) { return ((it.time || '--') + '  ' + it.title).trim(); }).join('\n')
+            : '今天没有排到计划\n（想看/想改：node 工具\\每日计划.mjs）',
+          size: pList.length,
+          planInfo: { day: pKey, total: pList.length, done: pDone, items: pList }
+        });
+        edges.push({ a: 'core', b: 'plan', kind: 'memory' });
+        pList.forEach(function (it) {
+          var pid = 'plan-' + String(it.id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+          var isDone = !!(it.logs && it.logs[pKey] && it.logs[pKey].done);
+          var mark = isDone ? '✓' : (String(it.time || '') ? '⏰' : '📋');
+          nodes.push({
+            id: pid,
+            label: mark + ' ' + (String(it.time || '') ? (String(it.time).padStart(5, '0') + ' ') : '') + String(it.title).slice(0, 16),
+            kind: 'memory', group: 'memory',
+            path: [it.title, it.note || '', it.due ? ('截止 ' + it.due) : '', 'id=' + it.id].filter(Boolean).join('\n'),
+            size: 0, planInfo: it
+          });
+          edges.push({ a: 'plan', b: pid, kind: 'memory' });
         });
       }
 
@@ -19137,5 +19208,196 @@ renderers.neuron = (body, meta, head) => {
     cv.removeEventListener('wheel', onWheel);
     body.innerHTML = '';
   };
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 每日计划面板（2026-11-25）
+//   数据：<home>\场景记忆\_共享记忆\每日计划.json —— 和 工具\每日计划.mjs 同一个文件、同一套字段。
+//   不做的事：不自己算"今天该出现哪些"以外的东西，不写 md，不碰引擎会话（那是记忆同步的活）。
+//   面板只做日常动作：看今天、勾一下、当场加一条、删一条；--week / --seed / 批量走命令行。
+// ══════════════════════════════════════════════════════════════════════════════
+renderers['plan-board'] = (body, meta) => {
+  body.classList.add('pb');
+  const DOW_CN = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  const KIND_CN = { routine: '固定', project: '项目', once: '一次性' };
+  const A = (window.app && window.app.plan) ? window.app.plan : null;
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function key(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function isoDow(d) { const w = d.getDay(); return w === 0 ? 7 : w; }
+
+  const head = el('div', 'pb-head');
+  const titleBox = el('div', 'pb-titlebox');
+  const title = el('div', 'pb-title', '今日计划');
+  const sub = el('div', 'pb-sub', '正在读…');
+  titleBox.appendChild(title);
+  titleBox.appendChild(sub);
+  const tools = el('div', 'pb-tools');
+  const bAdd = el('button', 'pb-btn pb-btn-add', '＋ 加一条');
+  const bReload = el('button', 'pb-btn', '↻');
+  bReload.title = '重新读盘（命令行改了计划之后点这个）';
+  tools.appendChild(bAdd);
+  tools.appendChild(bReload);
+  head.appendChild(titleBox);
+  head.appendChild(tools);
+
+  const form = el('div', 'pb-form');
+  form.style.display = 'none';
+  const fTitle = el('input', 'pb-input pb-f-title'); fTitle.placeholder = '要做什么';
+  const fTime = el('input', 'pb-input pb-f-time'); fTime.placeholder = '08:30';
+  const fDays = el('input', 'pb-input pb-f-days'); fDays.placeholder = '1,3,5（留空=每天）';
+  const fKind = el('select', 'pb-input pb-f-kind');
+  [['routine', '固定计划'], ['project', '自己的项目'], ['once', '一次性']].forEach((kv) => {
+    const o = document.createElement('option'); o.value = kv[0]; o.textContent = kv[1]; fKind.appendChild(o);
+  });
+  const fDue = el('input', 'pb-input pb-f-due'); fDue.placeholder = '2026-12-05（项目用，可空）';
+  const fNote = el('input', 'pb-input pb-f-note'); fNote.placeholder = '备注（可空）';
+  const bSave = el('button', 'pb-btn pb-btn-save', '存进去');
+  const bCancel = el('button', 'pb-btn', '取消');
+  [[fTitle, 'pb-f-title'], [fTime, 'pb-f-time'], [fDays, 'pb-f-days'], [fKind, 'pb-f-kind'], [fDue, 'pb-f-due'], [fNote, 'pb-f-note']]
+    .forEach((pair) => form.appendChild(pair[0]));
+  const formBar = el('div', 'pb-form-bar');
+  formBar.appendChild(el('span', 'pb-hint', '固定计划按时辰排；项目只看截止日，做完就不会再出现'));
+  formBar.appendChild(bCancel);
+  formBar.appendChild(bSave);
+  form.appendChild(formBar);
+
+  const list = el('div', 'pb-list');
+  body.appendChild(head);
+  body.appendChild(form);
+  body.appendChild(list);
+
+  let today = key(new Date());
+
+  function activeToday(it, d, dow) {
+    if (!it || !it.title) return false;
+    if (it.since && it.since > key(d)) return false;
+    if (it.until && it.until < key(d)) return false;
+    const done = !!(it.logs && it.logs[key(d)] && it.logs[key(d)].done);
+    const kind = it.kind || 'routine';
+    if (kind === 'project') return !done;
+    const days = Array.isArray(it.days) ? it.days.map(Number).filter((n) => n >= 1 && n <= 7) : [];
+    if (!days.length) return true;
+    return days.indexOf(dow) >= 0;
+  }
+  function sortKey(it) {
+    return /^\d{1,2}:\d{2}$/.test(String(it.time || '')) ? String(it.time).padStart(5, '0') : '99:99';
+  }
+  function dueText(it) {
+    if (!it.due) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(it.due);
+    if (!m) return '';
+    const dd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const n = Math.round((dd - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())) / 86400000);
+    if (n < 0) return '逾期 ' + (-n) + ' 天';
+    if (n === 0) return '就是今天';
+    return '还剩 ' + n + ' 天';
+  }
+
+  function rowOf(it, done) {
+    const row = el('div', 'pb-row' + (done ? ' done' : ''));
+    row.dataset.id = it.id;
+    const chk = el('button', 'pb-check' + (done ? ' on' : ''), done ? '✓' : '');
+    chk.title = done ? '点一下撤销' : '点一下标记完成';
+    chk.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (!A) return;
+      A.toggle(it.id, today).then((r) => { if (r && r.ok) load(); }).catch(() => { });
+    });
+    const t = el('span', 'pb-time', /^\d{1,2}:\d{2}$/.test(String(it.time || '')) ? String(it.time).padStart(5, '0') : ' -- ');
+    const nm = el('span', 'pb-name', it.title);
+    if (it.note) nm.title = it.note;
+    const kind = el('span', 'pb-kind pb-kind-' + (it.kind || 'routine'), KIND_CN[it.kind || 'routine'] || it.kind);
+    const due = el('span', 'pb-due', dueText(it));
+    const del = el('button', 'pb-del', '✕');
+    del.title = '删掉这条（会备份到 .bak-plan-*）';
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (!A) return;
+      A.remove(it.id).then((r) => { if (r && r.ok) load(); }).catch(() => { });
+    });
+    row.appendChild(chk); row.appendChild(t); row.appendChild(nm); row.appendChild(kind); row.appendChild(due); row.appendChild(del);
+    return row;
+  }
+
+  function paint(plan) {
+    const d = new Date();
+    today = key(d);
+    const dow = isoDow(d);
+    const items = (plan.items || []).filter((it) => activeToday(it, d, dow)).sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
+    const doneN = items.filter((it) => !!(it.logs && it.logs[today] && it.logs[today].done)).length;
+    sub.textContent = today + '（' + DOW_CN[dow] + '）· ' + items.length + ' 项 · 已完成 ' + doneN;
+    title.textContent = '今日计划';
+    list.innerHTML = '';
+    if (!items.length) {
+      const e = el('div', 'pb-empty');
+      e.appendChild(el('div', 'pb-empty-t', '今天没有排到计划'));
+      e.appendChild(el('div', 'pb-empty-s', '点「＋ 加一条」写第一条；或者用命令行：node 工具\\每日计划.mjs --seed'));
+      list.appendChild(e);
+      return;
+    }
+    items.forEach((it) => list.appendChild(rowOf(it, !!(it.logs && it.logs[today] && it.logs[today].done))));
+    // 项目类里"已完成"的单独收一行提一下，别让人以为被删了
+    const proj = (plan.items || []).filter((it) => (it.kind === 'project') && !items.some((x) => x.id === it.id));
+    if (proj.length) {
+      const tail = el('div', 'pb-tail', '已完成 / 暂停的项目 ' + proj.length + ' 个：' + proj.map((p) => p.title).join('、'));
+      list.appendChild(tail);
+    }
+  }
+
+  function load() {
+    if (!A) {
+      sub.textContent = '';
+      list.innerHTML = '';
+      list.appendChild(el('div', 'pb-empty-s', '这个面板要在工作台窗口里跑（拿不到 plan 接口）'));
+      return;
+    }
+    A.read().then((r) => {
+      if (!r || !r.ok) { sub.textContent = '读不了计划文件'; return; }
+      paint(r.plan || { items: [] });
+    }).catch((e) => { sub.textContent = '读失败：' + e; });
+  }
+
+  bReload.addEventListener('click', () => load());
+  bAdd.addEventListener('click', () => {
+    const open = form.style.display !== 'none';
+    form.style.display = open ? 'none' : 'flex';
+    if (!open) fTitle.focus();
+  });
+  bCancel.addEventListener('click', () => { form.style.display = 'none'; });
+  bSave.addEventListener('click', () => {
+    const tt = String(fTitle.value || '').trim();
+    if (!tt) { fTitle.focus(); return; }
+    if (!A) return;
+    A.read().then((r) => {
+      const plan = (r && r.plan) || { version: 1, items: [] };
+      plan.items = plan.items || [];
+      let n = 1;
+      const has = new Set(plan.items.map((x) => String(x.id)));
+      while (has.has('p' + n)) n++;
+      plan.items.push({
+        id: 'p' + n,
+        title: tt,
+        time: String(fTime.value || '').trim(),
+        days: String(fDays.value || '').split(',').map((s) => Number(s.trim())).filter((x) => x >= 1 && x <= 7),
+        kind: String(fKind.value || 'routine'),
+        due: String(fDue.value || '').trim(),
+        note: String(fNote.value || '').trim(),
+        since: today,
+        until: '',
+        logs: {},
+      });
+      return A.save(plan);
+    }).then((rr) => {
+      if (rr && rr.ok) {
+        fTitle.value = ''; fTime.value = ''; fDays.value = ''; fDue.value = ''; fNote.value = '';
+        form.style.display = 'none';
+        load();
+      } else if (rr && rr.err) { sub.textContent = '存不进去：' + rr.err; }
+    }).catch((e) => { sub.textContent = '存失败：' + e; });
+  });
+
+  load();
+  return function cleanup() { body.classList.remove('pb'); body.innerHTML = ''; };
 };
 

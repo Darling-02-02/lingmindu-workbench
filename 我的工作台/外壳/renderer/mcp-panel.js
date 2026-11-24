@@ -30,6 +30,10 @@
     { id: 'mcp-webai-chatglm',  label: '网页版·智谱清言', tools: 1, est: 128, grp: WEB, desc: '免费问智谱：写代码（主力）/ 结构化输出' },
     { id: 'mcp-webai-kimi',     label: '网页版·Kimi',     tools: 1, est: 132, grp: WEB, desc: '⚠ 当前打不进输入框（2026-09-23 实测），先别开' }
   ];
+  // ★2026-11-25 用户下线「接免费 AI」★：网页版 AI 那 5 行不再列出来（顶栏图标、桥服务、节点类型同批下线）。
+  //   注意：这只是"面板不再显示/不再提供开关"，5 个 MCP 在 engine-side 是否还装着要看 cordis.patch.yml；
+  //   真要彻底不注入 token，用 mcp-switch.mjs 或手写 `disabled: true` 关掉那几个 id。
+  MCP = MCP.filter(function (x) { return x.grp !== WEB; });
   var ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
     '<rect x="6.1" y="6.1" width="3.8" height="3.8" rx="1.1" stroke="currentColor" stroke-width="1.3"/>' +
     '<path d="M8 2.2v3.2M8 10.6v3.2M2.2 8h3.2M10.6 8h3.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +

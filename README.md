@@ -93,13 +93,29 @@
 面板里的 `dataSources` 一直是空的，所以它永远只显示手画的那张图。我加了 `工具\记忆同步.mjs`：
 只读引擎数据，只写 `记忆地图.json` 的 `dataSources` 和 `_共享记忆\引擎会话.json`，**绝不碰任何 `场景私有记忆.md`**（人写的东西不许程序覆盖）。
 外壳侧加了 `memory:sync` IPC（30 秒节流 + 并发合并，走异步执行不卡主进程），神经元面板 `load()` 前先触发一次。
-实测同步结果：会话 46（活 20 / 归档 26）、工作区 6、技能 4、事件档案 423 个 / 154.2MB。
 
-### 3. 主题（明暗三档 + 5 套配色）
+同步口径（v2，2026-11-25）——**和 dsh 工作区对齐**：
+
+- 会话列表读 `storages\workspace.json` 的 `tables.workspaces`（以 workspaceId 为键的对象，每条 `{path,title,sessionIds[],createdAt,updatedAt}`）。**这里踩过一个坑**：上游/我第一版按数组读 `ws.workspaces`，于是工作区恒为 0 个、会话只能按 cwd 猜分组。
+- 会话标题 + 一句话摘要从 `sessions\<cwd 编码>\<id>\session.v4.jsonl.zstd` 里取。zstd 是**多帧追加**（13MB 文件里 1 万多帧），`zstdDecompressSync` 只解第一帧、流式解压报 `Unknown frame descriptor` ⇒ 必须按 `28 B5 2F FD` 切段逐帧解。为了速度只读头 256KB + 尾 240KB，热缓存命中就跳过。
+- 标题优先级：`session/title` 事件 → subagent label → 第一条 user 消息前 44 字 → projcache `rows.title.val` 兜底（注意这个字段只是 system prompt 开头，**不是标题**）。摘要是尾部最后一条 `assistant/message` 的正文前 150 字。
+- 神经元面板跟着改了：新增 `workspace` / `session` 两种节点（工作区在最外球壳、会话沿切线铺开、归档的变暗），悬停会话会在标签下多画一行摘要，详情面板给出所属工作区 / 轮数 / 索引 KB / 最后活动时间。
+
+实测（2026-11-25 01:09）：工作区 12（11 个真工作区 + 未分组）、会话 47（活 21 / 归档 26）、技能 4、事件档案 424 个 / 155.0MB；首次全解 5.2s，热缓存 1.7s。
+
+### 3. 主题（明暗三档 + 5 套配色 + 外部皮肤）
 
 上游只有 dark / light / system。我加了 `外壳\renderer\skins.css`：
 `aurora`（默认）/ `forest` / `violet` / `amber` / `rose`，每套都有对应的浅色档，实现方式是 `html[data-skin]` 覆盖 CSS 变量，
 外观菜单拆成「明暗三档 ｜ 配色 5 色点」，点色点即时生效、不关菜单。
+
+再往上还有一层**外部皮肤**——照抄 dsh 自己的皮肤插件契约（对照已装的 `@smalltailqwq/dsh-client-ui-skin-maid-atelier`）：
+
+- `skin.json` 里的 `id / name / accent / bodyAttr / order / desktopIcon` 都能对上，`bodyAttr` 挂到 `<body>`（如 `data-dsh-deepsea`），CSS 靠属性选择器命中；`desktopIcon` 就是 dsh 换图标那一招
+- 工作台额外扩展三个字段：`background`（背景图，走一层 `#skin-bg-layer`，`z-index:-1`，不动任何现成元素）、`backgroundOpacity`、`vars`（直接覆盖 `--bg/--bg-panel/--border/--text/--accent` 等变量）
+- `外壳\main.js` 出 `skins:list` / `skins:base` / `skins:apply-icon` 三个 IPC；`apply-icon` 只 `setIcon()` 窗口与任务栏图标，**不写注册表、不改 .lnk**
+- 目录：`外壳\skins\<id>\{skin.json, skin.css, 背景图, .ico}`，`_` 开头跳过（当草稿区）
+- 自带两套示例：`deepsea`（深海鲸）/ `sunset`（落日橘）
 
 ### 4. 加网页面板（零改代码）
 
@@ -121,6 +137,9 @@
 面板的 `webview` 分区按 `id` 生成（`persist:embed-<id>`），**改 id 等于换登录态**。
 现成模板：[`我的工作台/外壳/scenarios/_模板-网页面板.json`](我的工作台/外壳/scenarios/_模板-网页面板.json)（`_` 开头的文件不进标签栏）。
 改已有场景：保存 + 顶栏 ⟳；加新场景文件：重启壳（引擎不用重启）。
+
+**不想改 json 就在界面里改**：场景标签栏最右边有个「＋」，点开就是「面板管理 · 场景名」——每面板一行（id / 标题 / 网址 / col / row / w / h），可加可删，「保存并刷新」写盘前自动备份成 `<场景>.json.bak-edit-<时间>`。
+IPC 侧 `scenario:save-panels` 做了三件保护：场景 id 走 `^[A-Za-z0-9_-]{1,48}$`、面板 id 同场景唯一、`col/row/w/h` 夹取到 1..24 / 1..12；**只替换 `panels`，别的字段原样保留**——所以改网页不会把 `sessionId` 之类的会话绑定弄丢。
 
 ### 5. 性能（把实测结论也放这，省得后来人再猜一遍）
 

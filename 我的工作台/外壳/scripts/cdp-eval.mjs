@@ -1,6 +1,16 @@
 // 通用 CDP 求值工具：node cdp-eval.mjs "<js表达式>" [port] [targetType]
-const expr = process.argv[2];
-const port = Number(process.argv[3] || 9223);
+// 端口默认自动探测：壳用 9224（9223 在本机被一次强杀留下的僵尸 LISTEN 占了），再退 9223/9222。
+// 表达式太长 / 含空白和引号（PowerShell 会重新分词）时，写成文件再传 @文件路径，省掉转义地狱。
+import fs from 'node:fs';
+const rawArg = process.argv[2];
+const expr = rawArg && rawArg.startsWith('@') ? fs.readFileSync(rawArg.slice(1), 'utf8') : rawArg;
+async function pickPort() {
+  for (const p of [9224, 9223, 9222]) {
+    try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
+  }
+  return 9224;
+}
+const port = Number(process.argv[3] || 0) || await pickPort();
 const typeWanted = process.argv[4] || 'page';
 if (!expr) { console.error('用法: node cdp-eval.mjs "<js>" [port] [page|webview]'); process.exit(1); }
 

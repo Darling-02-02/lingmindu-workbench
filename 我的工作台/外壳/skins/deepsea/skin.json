@@ -1,0 +1,23 @@
+{
+  "id": "deepsea",
+  "name": "深海鲸",
+  "nameEn": "Deep Sea",
+  "author": "大肥鱼",
+  "tagline": "深蓝渐变打底，海面光斑，面板半透",
+  "accent": "#38bdf8",
+  "bodyAttr": "data-dsh-deepsea",
+  "order": 10,
+  "background": "",
+  "backgroundOpacity": 0.35,
+  "desktopIcon": "",
+  "vars": {
+    "--bg": "#04121f",
+    "--bg-panel": "rgba(9,28,46,.86)",
+    "--bg-panel-hover": "rgba(14,40,64,.92)",
+    "--border": "#123a56",
+    "--text": "#dff0ff",
+    "--text-dim": "#7fa8c4",
+    "--accent": "#38bdf8",
+    "--accent-soft": "rgba(56,189,248,.16)"
+  }
+}

@@ -43,7 +43,7 @@ const MAP = [
   ['插件/启动动画', '插件/启动动画', true],
 ]
 /** 外壳 下允许递归的子目录 */
-const SHELL_SUBS = ['renderer', 'scenarios', 'scripts']
+const SHELL_SUBS = ['renderer', 'scenarios', 'scripts', 'skins']
 /** 根目录单文件 */
 const ROOT_FILES = ['启动.vbs', 'launch-inner.cmd', '.gitignore']
 

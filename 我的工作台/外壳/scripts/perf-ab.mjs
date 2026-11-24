@@ -1,7 +1,13 @@
 // A/B 实验：往壳的主页面注入/撤销一段"降耗 CSS"，用来验证 rAF/动画/毛玻璃是不是 CPU 大头
 // 用法: node perf-ab.mjs on|off [port]
 const mode = process.argv[2] || 'on';
-const port = Number(process.argv[3] || 9223);
+async function pickPort() {
+  for (const p of [9224, 9223, 9222]) {
+    try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
+  }
+  return 9224;
+}
+const port = Number(process.argv[3] || 0) || await pickPort();
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');

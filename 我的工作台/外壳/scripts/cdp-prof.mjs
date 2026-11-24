@@ -1,6 +1,12 @@
 // 对壳的主页面做 3 秒 CPU 采样，输出 self-time 最高的函数
 // 用法: node cdp-prof.mjs [port] [seconds]
-const port = Number(process.argv[2] || 9223);
+async function pickPort() {
+  for (const p of [9224, 9223, 9222]) {
+    try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
+  }
+  return 9224;
+}
+const port = Number(process.argv[2] || 0) || await pickPort();
 const seconds = Number(process.argv[3] || 3);
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();

@@ -1,0 +1,23 @@
+{
+  "id": "sunset",
+  "name": "落日橘",
+  "nameEn": "Sunset",
+  "author": "大肥鱼",
+  "tagline": "暖橘余晖，晚上看着不刺眼",
+  "accent": "#fb923c",
+  "bodyAttr": "data-dsh-sunset",
+  "order": 20,
+  "background": "",
+  "backgroundOpacity": 0.3,
+  "desktopIcon": "",
+  "vars": {
+    "--bg": "#140d0a",
+    "--bg-panel": "rgba(38,23,18,.88)",
+    "--bg-panel-hover": "rgba(52,32,24,.94)",
+    "--border": "#3d261c",
+    "--text": "#ffe9dc",
+    "--text-dim": "#c19a86",
+    "--accent": "#fb923c",
+    "--accent-soft": "rgba(251,146,60,.16)"
+  }
+}

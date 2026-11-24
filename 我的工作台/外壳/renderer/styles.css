@@ -5002,3 +5002,46 @@ body.wb-resizing { user-select: none; }
 #grid::-webkit-scrollbar { width: 10px; }
 #grid::-webkit-scrollbar-thumb { background: rgba(79,140,255,.28); border-radius: 5px; }
 #grid::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 场景面板编辑弹层（2026-11-25，renderer.js buildPanelEditor）---------- */
+.tab.tab-add {
+  min-width: 30px;
+  padding: 0 8px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.tab.tab-add:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-panel-hover); }
+
+.pe-rows { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.pe-row {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px 10px;
+  background: var(--bg-panel);
+}
+.pe-row-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.pe-badge { font-size: 11px; color: var(--text-dim); letter-spacing: .3px; }
+.pe-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px 8px; }
+.pe-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pe-field:nth-child(1), .pe-field:nth-child(2) { grid-column: span 2; }
+.pe-field:nth-child(3) { grid-column: span 4; }
+.pe-cap { font-size: 10px; color: var(--text-dim); }
+.pe-input {
+  height: 26px;
+  padding: 0 7px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+}
+.pe-input:focus { outline: none; border-color: var(--accent); }
+.pe-bar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.pe-save { border-color: var(--accent); color: var(--accent); }
+.pe-save:hover { background: var(--accent); color: #fff; }

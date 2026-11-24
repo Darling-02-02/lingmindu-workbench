@@ -35,3 +35,22 @@ html[data-skin] #grid::-webkit-scrollbar-thumb:hover { background: var(--accent)
   width: 12px; height: 12px; border-radius: 50%; display: inline-block;
   box-shadow: 0 0 0 1px rgba(255,255,255,.18) inset;
 }
+
+/* ---------- 外部皮肤的背景层（2026-11-25）----------
+   一层 fixed 的图，压在 html 底色之上、body 内容之下（z-index:-1）。
+   要把 body 自己的不透明底色去掉才能看见它；html 顶上底色，避免透明处闪白/闪黑。
+   皮肤自己的 panel/tab 想透出背景，就写在 外壳\skins\<id>\skin.css 里（和 dsh 皮肤同一套做法）。 */
+.skin-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-position: center center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transition: opacity .28s ease;
+}
+html[data-skin-bg="1"] { background: var(--bg); }
+html[data-skin-bg="1"] body { background: transparent; }
+html[data-skin-bg="1"] #scenebar { background: color-mix(in srgb, var(--bg-panel) 78%, transparent); }

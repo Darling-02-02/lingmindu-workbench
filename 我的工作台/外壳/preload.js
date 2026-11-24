@@ -52,6 +52,14 @@ contextBridge.exposeInMainWorld('app', {
   injectHarnessPanel: (webContentsId, pinTarget) => ipcRenderer.invoke('harness:wv:inject', webContentsId, pinTarget),
   listScenarios: () => ipcRenderer.invoke('scenarios:list'),
   getScenario: (id) => ipcRenderer.invoke('scenario:get', id),
+  // 面板编辑（2026-11-25）：只写 scenarios/<id>.json 的 panels，主进程负责校验/夹取/备份
+  saveScenarioPanels: (id, panels) => ipcRenderer.invoke('scenario:save-panels', id, panels),
+  // 皮肤（2026-11-25）：扫 外壳\skins\<id>\skin.json（对齐 dsh 皮肤契约），换背景 + 换窗口图标
+  skins: {
+    list: () => ipcRenderer.invoke('skins:list'),
+    base: () => ipcRenderer.invoke('skins:base'),
+    applyIcon: (id) => ipcRenderer.invoke('skins:apply-icon', id)
+  },
   // ---- 设置：读取 / 打开 Harness 配置文件 ----
   settings: {
     list: () => ipcRenderer.invoke('settings:list'),

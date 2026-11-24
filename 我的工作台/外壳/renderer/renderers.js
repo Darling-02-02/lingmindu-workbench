@@ -17880,7 +17880,7 @@ renderers.neuron = (body, meta, head) => {
     'wb-ai': 'content', 'oa-ai': 'content', 'vw-ai': 'content', 'bv-ai': 'content', 'bl-ai': 'content',
     'mk-chat': 'content', 'sr-ai': 'content', 'pc-ai': 'ops'
   };
-  const COLOR = { core: '#7fe3ff', engine: '#8fb4ff', ui: '#f0a35e', code: '#b79bff', content: '#3ddc84', ops: '#e5484d', skill: '#6f8fd6', doc: '#c9d4e6', project: '#2dd4bf', memory: '#dfe7ff', source: '#8f9bb3', chain: '#ffcf6b' };
+  const COLOR = { core: '#7fe3ff', engine: '#8fb4ff', ui: '#f0a35e', code: '#b79bff', content: '#3ddc84', ops: '#e5484d', skill: '#6f8fd6', doc: '#c9d4e6', project: '#2dd4bf', memory: '#dfe7ff', source: '#8f9bb3', chain: '#ffcf6b', workspace: '#2dd4bf', session: '#67e8c9' };
   // 项目层（2026-10-26）：不是从记忆里正则猜，而是直接列真实目录（B 盘/项目工程），归属按 area 正文里出现的名字来挂
   const PROJECT_ROOTS = P.projectRoots || [];
   // dg-dsh 审计（2026-10-26）：这 5 个是一级目录但属于「资料/介质夹」，不是项目
@@ -17928,7 +17928,7 @@ renderers.neuron = (body, meta, head) => {
   hud.appendChild(btns);
   const detail = el('div', 'kneu-detail');
   const legend = el('div', 'kneu-legend');
-  [['engine', '引擎/工具'], ['ui', '界面/设计'], ['code', '代码'], ['content', '内容/业务'], ['ops', '运维/清理'], ['project', '项目'], ['memory', '私有记忆'], ['chain', '提交链'], ['source', '数据源'], ['skill', '技能'], ['doc', '共享文档']]
+  [['engine', '引擎/工具'], ['ui', '界面/设计'], ['code', '代码'], ['content', '内容/业务'], ['ops', '运维/清理'], ['project', '项目'], ['workspace', '工作区'], ['session', '会话'], ['memory', '私有记忆'], ['chain', '提交链'], ['source', '数据源'], ['skill', '技能'], ['doc', '共享文档']]
     .forEach(function (p) {
       var it = el('span', 'kneu-lg');
       var dot = el('i', 'kneu-dot');
@@ -18110,7 +18110,7 @@ renderers.neuron = (body, meta, head) => {
 
       // 数据源节点（记忆地图 dataSources）：工具/插件/MCP/会话档案/备份/台账/体检 …
       if (memMap && memMap.dataSources) {
-        var SKIP = { scenes: 1, skills: 1, projects: 1, tasks: 1 };   // 这几个已有专门节点
+        var SKIP = { scenes: 1, skills: 1, projects: 1, tasks: 1, workspaces: 1 };   // 这几个已有专门节点（workspaces 在下面单独铺开）
         Object.keys(memMap.dataSources).forEach(function (key) {
           if (SKIP[key]) return;
           var ds = memMap.dataSources[key] || {};
@@ -18122,6 +18122,37 @@ renderers.neuron = (body, meta, head) => {
             dsInfo: ds
           });
           edges.push({ a: 'core', b: 'src-' + key, kind: 'source' });
+        });
+      }
+
+      // 工作区 / 会话（2026-11-25，宿主：「保证能在神经元上体现各个工作区的名字、session 和简略内容」）
+      //   以前只有「会话档案 46」一个聚合点 —— 不知道是哪个项目、哪条会话、聊到哪了。
+      //   数据来自 工具\记忆同步.mjs 写进 dataSources.workspaces（引擎 storages\workspace.json + sessions 存档头部/尾部）。
+      if (memMap && memMap.dataSources && memMap.dataSources.workspaces) {
+        var wsDS = memMap.dataSources.workspaces;
+        (wsDS.items || []).forEach(function (w) {
+          if (!w || !w.id) return;
+          var wid = 'ws-' + String(w.id).replace(/[^A-Za-z0-9_-]/g, '_');
+          nodes.push({
+            id: wid, label: String(w.title || w.id).slice(0, 20),
+            kind: 'workspace', group: 'workspace',
+            path: w.path || '', size: w.knownSessions || 0,
+            wsInfo: w, wsId: w.id
+          });
+          edges.push({ a: 'core', b: wid, kind: 'project' });
+          (w.sessions || []).forEach(function (s, si) {
+            if (!s) return;
+            var sid = wid + '--' + String(s.short || s.id).replace(/[^A-Za-z0-9_-]/g, '_');
+            nodes.push({
+              id: sid,
+              label: String(s.title || s.short || '').slice(0, 22),
+              kind: 'session',
+              group: s.archived ? 'source' : 'session',
+              path: w.path || '',
+              size: 0, sesInfo: s, wsId: w.id, wsTitle: w.title, sesIdx: si
+            });
+            edges.push({ a: wid, b: sid, kind: 'source' });
+          });
         });
       }
 
@@ -18265,6 +18296,9 @@ renderers.neuron = (body, meta, head) => {
       var nDocN = nodes.filter(function (n) { return n.kind === 'doc'; }).length;
       var nSrcN = nodes.filter(function (n) { return n.kind === 'source'; }).length;
       var nProjN = nodes.filter(function (n) { return n.kind === 'project'; }).length;
+      var nWsN = nodes.filter(function (n) { return n.kind === 'workspace'; }).length;
+      var nSesN = nodes.filter(function (n) { return n.kind === 'session'; }).length;
+      var nSesArch = nodes.filter(function (n) { return n.kind === 'session' && n.sesInfo && n.sesInfo.archived; }).length;
       var nAnchorN = nodes.filter(function (n) { return n.kind === 'chain'; }).reduce(function (a, n) { return a + (n.total || 0); }, 0);
       var nLoneN = nodes.filter(function (n) { return n.kind !== 'core' && !n.deg; }).length;
       var chips = [
@@ -18275,6 +18309,8 @@ renderers.neuron = (body, meta, head) => {
         { t: '数据源 ' + nSrcN },
         { t: '提交链 ' + nChainN + ' 文件 / ' + nAnchorN + ' 锚点' },
         { t: '项目 ' + nProjN },
+        { t: '工作区 ' + nWsN },
+        { t: '会话 ' + nSesN + (nSesArch ? ('（归档 ' + nSesArch + '）') : '') },
         { t: '连线 ' + edges.length },
         { t: '孤立 ' + nLoneN, cls: nLoneN ? ' bad' : '' }
       ];
@@ -18287,6 +18323,10 @@ renderers.neuron = (body, meta, head) => {
       });
       stat.title = '数据源：引擎\\场景记忆\\_共享记忆（索引/项目/记忆地图/提交链）+ .dsh\\skills 目录'
         + ' · 核对时间 ' + new Date().toLocaleString('zh-CN', { hour12: false });
+      // 2026-11-25：load 是异步的（memorySync 可能跑几秒），画布早就在空数据上画过一帧、
+      //   甚至被 fit() 的 cv.width 赋值清空过 —— 数据到位后必须主动叫醒帧循环，否则停在空白帧。
+      markDirty();
+      if (!raf) raf = requestAnimationFrame(loop);
     }).catch(function (e) {
       stat.textContent = '读不到共享记忆：' + ((e && e.message) || e);
     });
@@ -18369,6 +18409,33 @@ renderers.neuron = (body, meta, head) => {
       var t = [0, 2.1, 4.2][i % 3];
       n.x = Math.cos(t) * R0; n.y = Math.sin(t) * 30; n.z = Math.sin(t) * R0; n.r = 8;
     });
+
+    // 工作区（2026-11-25）：最外一圈球壳，每个工作区独占一个扇区；会话贴着它的工作区散开成一小簇。
+    //   这样一眼是「哪个目录 / 哪条会话 / 说到哪」，而不是一堆无名的绿点。
+    var wss = nodes.filter(function (n) { return n.kind === 'workspace'; });
+    var RW = 1080;
+    var wsById = {};
+    wss.forEach(function (n, i) {
+      var t = (i / Math.max(1, wss.length)) * Math.PI * 2;
+      var ring = (i % 2 === 0) ? 1 : 0.9;
+      n.x = Math.cos(t) * RW * ring;
+      n.y = Math.sin(t * 1.6) * 120 * ring;
+      n.z = Math.sin(t) * RW * ring;
+      n.r = 6.2 + Math.min(4, Math.sqrt((n.size || 0) / 6));
+      n.ang = t;
+      wsById[n.id] = n;
+    });
+    nodes.filter(function (n) { return n.kind === 'session'; }).forEach(function (n) {
+      var own = wsById['ws-' + String(n.wsId || '').replace(/[^A-Za-z0-9_-]/g, '_')];
+      if (!own) return;
+      var k = n.sesIdx || 0;
+      var t = (own.ang || 0) + (k - 3.5) * 0.055;              // 沿切线铺开
+      var rad = Math.hypot(own.x, own.z) * (0.86 + (k % 3) * 0.045);
+      n.x = Math.cos(t) * rad;
+      n.z = Math.sin(t) * rad;
+      n.y = own.y + ((k % 2) ? 26 : -26) * (1 + Math.floor(k / 2) * 0.35);
+      n.r = n.sesInfo && n.sesInfo.archived ? 3.2 : 4.2;
+    });
     nodes.filter(function (n) { return n.kind === 'core'; }).forEach(function (n) { n.x = 0; n.y = 0; n.z = 0; });
   }
 
@@ -18389,6 +18456,11 @@ renderers.neuron = (body, meta, head) => {
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
     cv.style.width = W + 'px'; cv.style.height = H + 'px';
     makeStars();
+    // 2026-11-25：给 cv.width 赋值会清空画布。面板刚建时 rect 是 0，fit() 要等下一帧才有真尺寸，
+    //   而数据早就画过了 —— 这一下清零后没人重画就是永久空白（切场景/重启壳后实测复现）。
+    //   所以量完尺寸必须重新叫醒帧循环（markDirty/loop 都在后面声明，函数提升可用）。
+    markDirty();
+    if (!raf) raf = requestAnimationFrame(loop);
   }
   function project(n) {
     var cy = Math.cos(ry), sy = Math.sin(ry);
@@ -18770,6 +18842,21 @@ renderers.neuron = (body, meta, head) => {
           ctx.fillStyle = force ? '#eaf2ff' : ctx.fillStyle;
           ctx.textAlign = alignMode;
           ctx.fillText(lbl, pick.lx, ly);
+          // 会话节点（2026-11-25）：悬停/选中时补一行「简略内容」—— 这就是"这条会话说到哪了"。
+          if (n.kind === 'session' && force && n.sesInfo && n.sesInfo.digest) {
+            var dg = String(n.sesInfo.digest).slice(0, 52);
+            ctx.font = '400 9px ui-sans-serif, "Microsoft YaHei", system-ui';
+            var dw = ctx.measureText(dg).width;
+            var dx = alignMode === 'left' ? pick.lx : (alignMode === 'right' ? pick.lx - dw : pick.lx - dw / 2);
+            var dy = ly + 13;
+            ctx.beginPath();
+            if (ctx.roundRect) { ctx.roundRect(dx - 3, dy - 9, dw + 6, 13, 4); } else { ctx.rect(dx - 3, dy - 9, dw + 6, 13); }
+            ctx.fillStyle = 'rgba(6,10,18,0.72)';
+            ctx.fill();
+            ctx.fillStyle = 'rgba(190,235,225,.92)';
+            ctx.textAlign = alignMode;
+            ctx.fillText(dg, dx, dy);
+          }
         }
       }
     });
@@ -18895,6 +18982,26 @@ renderers.neuron = (body, meta, head) => {
         detail.appendChild(el('div', 'kneu-dp', e.coord + '  ' + String(e.title || '').slice(0, 26)));
       });
     }
+    if (n.wsInfo) {
+      var wi = n.wsInfo;
+      detail.appendChild(el('div', 'kneu-ds', '工作区' + (wi.default ? '（默认）' : '') + ' · 已知会话 ' + (wi.knownSessions || 0) + ' / 登记 ' + (wi.sessionCount || 0) + ' · 活 ' + (wi.activeCount || 0)));
+      if (wi.lastAt) detail.appendChild(el('div', 'kneu-ds', '最近会话：' + wi.lastAt));
+      if (wi.sessions && wi.sessions.length) {
+        detail.appendChild(el('div', 'kneu-ds', '最近 ' + wi.sessions.length + ' 条（点节点看详情）：'));
+        wi.sessions.forEach(function (s) {
+          var it = el('div', 'kneu-dp', (s.archived ? '⌸ ' : '· ') + (s.title || s.short) + (s.lastAt ? ('  ' + String(s.lastAt).slice(5, 16)) : ''));
+          it.title = s.digest || '';
+          detail.appendChild(it);
+        });
+      }
+    }
+    if (n.sesInfo) {
+      var se = n.sesInfo;
+      detail.appendChild(el('div', 'kneu-ds', '会话 ' + (se.short || '') + (se.archived ? ' · 已归档' : ' · 活跃') + (se.turns ? (' · ' + se.turns + ' 轮') : '') + (se.kb ? (' · 索引 ' + se.kb + 'KB') : '')));
+      detail.appendChild(el('div', 'kneu-ds', '所属工作区：' + (n.wsTitle || '(未分组)')));
+      if (se.digest) detail.appendChild(el('div', 'kneu-dp', '简略：' + se.digest));
+      if (se.lastAt) detail.appendChild(el('div', 'kneu-ds', '最后活动：' + se.lastAt));
+    }
     if (n.dsInfo) {
       if (n.dsInfo.count) detail.appendChild(el('div', 'kneu-ds', '数量：' + n.dsInfo.count));
       if (n.dsInfo.caveat) detail.appendChild(el('div', 'kneu-ds', '说明：' + n.dsInfo.caveat));
@@ -18931,11 +19038,11 @@ renderers.neuron = (body, meta, head) => {
       if (APP && APP.revealPath) Promise.resolve(APP.revealPath(p2)).then(function (r) { if (r && r.ok === false) stat.textContent = '定位失败：' + (r.error || ''); });
       else stat.textContent = '这个版本没有定位通道';
     });
-    var bCopy = el('button', 'kneu-btn', '⧉ 复制路径');
+    var bCopy = el('button', 'kneu-btn', n.sesInfo ? '⧉ 复制 sessionId' : '⧉ 复制路径');
     bCopy.type = 'button';
     bCopy.addEventListener('click', function (ev) {
       ev.stopPropagation();
-      try { navigator.clipboard.writeText(n.path || ''); bCopy.textContent = '✓ 已复制'; } catch (e) { /* ignore */ }
+      try { navigator.clipboard.writeText(n.sesInfo ? String(n.sesInfo.id || '') : (n.path || '')); bCopy.textContent = '✓ 已复制'; } catch (e) { /* ignore */ }
     });
     row.appendChild(bOpen); row.appendChild(bReveal); row.appendChild(bCopy);
     detail.appendChild(row);

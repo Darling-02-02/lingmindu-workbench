@@ -1416,6 +1416,126 @@ ipcMain.handle('harness:wv:inject', (e, webContentsId, pinTarget) => {
 });
 ipcMain.handle('scenarios:list', () => listScenarios());
 ipcMain.handle('scenario:get', (e, id) => getScenario(id));
+
+/**
+ * 场景面板编辑（2026-11-25，宿主「②UI 里自定义页面接口」）
+ * 只改 scenarios/<id>.json 的 panels 数组 —— 不碰 meta/theme/layout 等其它字段。
+ * 规矩：
+ *   · 场景 id 只认 [A-Za-z0-9_-]，且文件必须已存在（新建场景仍走手工建 json，避免 UI 造出半个场景）
+ *   · 面板 id 同一场景内唯一；改 id = 换 webview partition = 换登录态，这是有意为之（不在 UI 里提示）
+ *   · col/row/w/h 一律夹取，坏值回落默认，宁可画歪也不写坏文件
+ *   · 写盘前 copyFile 备份 <id>.json.bak-edit-<yyyymmddHHMMSS>
+ */
+const SC_ID_RE = /^[A-Za-z0-9_-]{1,48}$/;
+function clampNum(v, lo, hi, dflt) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+ipcMain.handle('scenario:save-panels', (e, id, panels) => {
+  const sid = String(id || '').trim();
+  if (!SC_ID_RE.test(sid)) return { ok: false, err: '场景 id 不合法：' + sid };
+  const file = path.join(SCENARIOS_DIR, sid + '.json');
+  if (!fs.existsSync(file)) return { ok: false, err: '场景不存在：' + sid + '.json' };
+  let sc;
+  try { sc = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) { return { ok: false, err: '场景 json 读不动（先手工修好）' }; }
+  if (!Array.isArray(panels)) return { ok: false, err: 'panels 必须是数组' };
+  const seen = new Set();
+  const clean = [];
+  for (const raw of panels) {
+    if (!raw || typeof raw !== 'object') continue;
+    const pid = String(raw.id || '').trim();
+    if (!SC_ID_RE.test(pid)) return { ok: false, err: '面板 id 只认字母数字-_（48 内）：' + pid };
+    if (seen.has(pid)) return { ok: false, err: '面板 id 重复：' + pid };
+    seen.add(pid);
+    const type = String(raw.type || 'embed');
+    const p = Object.assign({}, raw, {
+      id: pid,
+      title: String(raw.title || pid).slice(0, 60),
+      type: type,
+      col: clampNum(raw.col, 1, 24, 1),
+      row: clampNum(raw.row, 1, 12, 1),
+      w: clampNum(raw.w, 1, 24, 4),
+      h: clampNum(raw.h, 1, 12, 4),
+    });
+    if (type === 'embed') {
+      const url = String(p.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) return { ok: false, err: '面板「' + pid + '」的 url 必须是 http(s):// 开头' };
+      p.url = url;
+    }
+    clean.push(p);
+  }
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const backup = path.join(SCENARIOS_DIR, sid + '.json.bak-edit-' + stamp);
+  try { fs.copyFileSync(file, backup); } catch (err) { /* 备份失败不拦，下面照写 */ }
+  sc.panels = clean;
+  try { fs.writeFileSync(file, JSON.stringify(sc, null, 2) + '\n', 'utf8'); }
+  catch (err) { return { ok: false, err: '写入失败：' + String((err && err.message) || err) }; }
+  log('[scenario] 面板已保存 ' + sid + '：' + clean.length + ' 个 · 备份 ' + path.basename(backup));
+  return { ok: true, id: sid, panels: clean, backup: path.basename(backup) };
+});
+
+/**
+ * 皮肤（2026-11-25，宿主「③主题要和 dsh 自身的主题插件一致，可换背景和 icon」）
+ * 目录：外壳\skins\<id>\
+ *   skin.json —— 字段对齐 dsh 的皮肤契约（id/name/nameEn/author/tagline/accent/bodyAttr/desktopIcon/order），
+ *                另外认两个工作台专属字段：background（背景图，相对 skin.json 所在的目录）、backgroundOpacity
+ *   skin.css  —— 可选，挂到渲染层；里面用 html[data-skin="<id>"] 或 body[<bodyAttr>] 覆盖样式
+ *   *.ico     —— desktopIcon 指向它 → 换窗口/任务栏图标
+ * 内置的 5 套配色（aurora/forest/violet/amber/rose）仍在 renderer\skins.css 里，不占目录。
+ */
+const SKINS_DIR = path.join(__dirname, 'skins');
+function fileUrl(p) { return 'file:///' + String(p).replace(/\\/g, '/'); }
+function listSkins() {
+  const out = [];
+  if (!fs.existsSync(SKINS_DIR)) return out;
+  for (const name of fs.readdirSync(SKINS_DIR).sort()) {
+    if (name.startsWith('_') || name.startsWith('.')) continue;
+    const dir = path.join(SKINS_DIR, name);
+    let st = null;
+    try { st = fs.statSync(dir); } catch (e) { continue; }
+    if (!st.isDirectory()) continue;
+    const jf = path.join(dir, 'skin.json');
+    if (!fs.existsSync(jf)) continue;
+    let j = null;
+    try { j = JSON.parse(fs.readFileSync(jf, 'utf8').replace(/^\uFEFF/, '')); } catch (e) { log('[skin] 跳过坏 json：' + name); continue; }
+    if (!j || !j.id) continue;
+    const cssFile = path.join(dir, 'skin.css');
+    const bgRaw = j.background ? path.join(dir, String(j.background)) : '';
+    const iconRaw = j.desktopIcon ? path.join(dir, String(j.desktopIcon)) : '';
+    out.push({
+      id: String(j.id),
+      name: String(j.name || j.id),
+      nameEn: String(j.nameEn || ''),
+      author: String(j.author || ''),
+      tagline: String(j.tagline || ''),
+      accent: String(j.accent || ''),
+      bodyAttr: String(j.bodyAttr || ('data-dsh-' + String(j.id))),
+      order: Number.isFinite(Number(j.order)) ? Number(j.order) : 100,
+      css: fs.existsSync(cssFile) ? fileUrl(cssFile) : '',
+      background: (bgRaw && fs.existsSync(bgRaw)) ? fileUrl(bgRaw) : '',
+      backgroundOpacity: Number.isFinite(Number(j.backgroundOpacity)) ? Math.max(0, Math.min(1, Number(j.backgroundOpacity))) : 0.22,
+      icon: (iconRaw && fs.existsSync(iconRaw)) ? iconRaw : '',
+      vars: (j.vars && typeof j.vars === 'object') ? j.vars : null,
+    });
+  }
+  out.sort((a, b) => (a.order - b.order) || a.id.localeCompare(b.id));
+  return out;
+}
+ipcMain.handle('skins:list', () => listSkins());
+ipcMain.handle('skins:base', () => fileUrl(SKINS_DIR) + '/');
+// 换窗口 + 任务栏图标：只作用于发起请求的那个窗口（皮肤切成别的就换回来，不写注册表、不动 .lnk）
+ipcMain.handle('skins:apply-icon', (e, skinId) => {
+  const w = BrowserWindow.fromWebContents(e.sender) || null;
+  if (!w) return { ok: false, err: '找不到窗口' };
+  const sid = String(skinId || '');
+  const sk = listSkins().find((s) => s.id === sid);
+  const def = path.join(__dirname, 'icon.ico');
+  const want = (sk && sk.icon) ? sk.icon : (fs.existsSync(def) ? def : '');
+  if (!want || !fs.existsSync(want)) return { ok: false, err: '没有可用的 ico' };
+  try { w.setIcon(want); } catch (err) { return { ok: false, err: String(err.message || err) }; }
+  return { ok: true, icon: want };
+});
 // 场景标签顺序（拖拽换位）：渲染层拖完报上来，下次开机 / 其它窗口都读它
 ipcMain.handle('scenes:order:get', () => ({ saved: fs.existsSync(SCENE_ORDER_FILE), ids: readSceneTabOrder() }));
 ipcMain.handle('scenes:order:set', (e, ids) => saveSceneTabOrder(ids));

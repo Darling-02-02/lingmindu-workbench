@@ -99,6 +99,107 @@ function closeModal() {
   document.getElementById('modal-mask').style.display = 'none';
 }
 
+// ---------- 场景面板编辑（2026-11-25）----------
+// 「UI 里自定义其他页面接口」：给当前场景加网页 / 改网址 / 调网格，落盘 scenarios/<id>.json。
+// 只动 panels 数组；校验、col/row/w/h 夹取、写前备份都在主进程（main.js scenario:save-panels）。
+function showPanelEditor(sceneId) {
+  const sid = String(sceneId || '');
+  if (!sid) { setStatus('先切到一个场景，再点 ＋', true); return; }
+  window.app.getScenario(sid).then((sc) => {
+    if (!sc) { setStatus('读不到场景：' + sid, true); return; }
+    openModal('面板管理 · ' + (sc.name || sid), (body) => buildPanelEditor(body, sid, sc));
+  }).catch((e) => setStatus('读场景失败：' + e.message, true));
+}
+
+function buildPanelEditor(body, sid, sc) {
+  const list = (Array.isArray(sc.panels) ? sc.panels : []).map((p) => Object.assign({}, p));
+
+  body.appendChild(mkEl('div', 'stat-sub',
+    '场景 ' + sid + ' · ' + list.length + ' 个面板 · 网格列数 ' + (sc.cols || 4)
+    + '。改完点「保存并刷新」。写盘前自动备份成 ' + sid + '.json.bak-edit-<时间>；'
+    + '面板 id 决定网页的登录分区（改 id = 换登录态，登录会掉）。'));
+
+  const rows = mkEl('div', 'pe-rows');
+
+  function field(parent, label, value, onChange, opts) {
+    const box = mkEl('label', 'pe-field');
+    box.appendChild(mkEl('span', 'pe-cap', label));
+    const input = mkEl('input', 'pe-input');
+    input.value = value == null ? '' : String(value);
+    if (opts && opts.placeholder) input.placeholder = opts.placeholder;
+    if (opts && opts.num) input.inputMode = 'numeric';
+    input.addEventListener('input', () => onChange(input.value));
+    box.appendChild(input);
+    parent.appendChild(box);
+    return input;
+  }
+
+  function drawRows() {
+    rows.innerHTML = '';
+    if (!list.length) rows.appendChild(mkEl('div', 'stat-sub', '这个场景还没有面板 —— 点下面的按钮加一个。'));
+    list.forEach((p, i) => {
+      const row = mkEl('div', 'pe-row');
+      const top = mkEl('div', 'pe-row-top');
+      top.appendChild(mkEl('span', 'pe-badge', (i + 1) + ' · ' + (p.type || 'embed') + (p.type === 'harness' ? '（DSH 会话面板）' : '')));
+      const del = mkEl('button', 'sk-btn mini', '删除');
+      del.addEventListener('click', () => { list.splice(i, 1); drawRows(); });
+      top.appendChild(del);
+      row.appendChild(top);
+
+      const grid = mkEl('div', 'pe-grid');
+      field(grid, 'id（分区键）', p.id, (v) => { p.id = v.trim(); });
+      field(grid, '标题', p.title, (v) => { p.title = v; });
+      field(grid, '网址（embed 必填）', p.url || '', (v) => { p.url = v.trim(); }, { placeholder: 'https://example.com/' });
+      field(grid, 'col', p.col, (v) => { p.col = Number(v) || 1; }, { num: true });
+      field(grid, 'row', p.row, (v) => { p.row = Number(v) || 1; }, { num: true });
+      field(grid, '宽 w', p.w, (v) => { p.w = Number(v) || 1; }, { num: true });
+      field(grid, '高 h', p.h, (v) => { p.h = Number(v) || 1; }, { num: true });
+      row.appendChild(grid);
+      rows.appendChild(row);
+    });
+  }
+  drawRows();
+  body.appendChild(rows);
+
+  const bar = mkEl('div', 'pe-bar');
+  const add = mkEl('button', 'sk-btn', '＋ 加一个网页面板');
+  add.addEventListener('click', () => {
+    const n = list.length + 1;
+    list.push({
+      id: 'web' + n + '-' + Math.random().toString(36).slice(2, 5),
+      title: '新网页 ' + n,
+      type: 'embed',
+      url: 'https://',
+      col: 1, row: 1, w: Math.min(4, Number(sc.cols) || 4), h: 4,
+    });
+    drawRows();
+    body.scrollTop = body.scrollHeight;
+  });
+  const save = mkEl('button', 'sk-btn pe-save', '保存并刷新');
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    const label = save.textContent;
+    save.textContent = '保存中…';
+    try {
+      const r = await window.app.saveScenarioPanels(sid, list);
+      if (!r || !r.ok) {
+        setStatus('保存失败：' + ((r && r.err) || '未知原因'), true);
+      } else {
+        setStatus('已保存 ' + sid + '：' + r.panels.length + ' 个面板 · 备份 ' + r.backup, false);
+        closeModal();
+        try { await reloadScene(); } catch (e) { /* 手动点 ⟳ 也行 */ }
+      }
+    } catch (e) {
+      setStatus('保存异常：' + e.message, true);
+    }
+    save.disabled = false;
+    save.textContent = label;
+  });
+  bar.appendChild(add);
+  bar.appendChild(save);
+  body.appendChild(bar);
+}
+
 async function showPlugins() {
   openModal('已安装插件', async (body) => {
     body.appendChild(mkEl('div', 'stat-sub', '正在读取插件目录…'));
@@ -685,13 +786,69 @@ const SKINS = [
   ['amber', '#f0a35e', '琥珀橙'],
   ['rose', '#f472b6', '玫瑰粉'],
 ];
+// ---- 外部皮肤（2026-11-25，宿主「③和 dsh 自身的主题插件一致，可换背景和 icon」）----
+// 目录 外壳\skins\<id>\：skin.json（id/name/accent/bodyAttr/desktopIcon/background/order/vars）
+//   + skin.css（可选）+ 背景图 + .ico。dsh 前端的皮肤是靠 body[data-dsh-<id>] 挂 CSS，
+//   这里照抄同一套约定：bodyAttr 挂到 body，skin.css 由 <link> 加载，不内联、不打包。
+let EXT_SKINS = [];
+const extSkinLinks = {};
 function currentSkin() {
   const v = localStorage.getItem(SKIN_KEY);
   for (let i = 0; i < SKINS.length; i++) if (SKINS[i][0] === v) return v;
+  for (let i = 0; i < EXT_SKINS.length; i++) if (EXT_SKINS[i].id === v) return v;
   return 'aurora';
 }
+function extSkinOf(k) {
+  for (let i = 0; i < EXT_SKINS.length; i++) if (EXT_SKINS[i].id === k) return EXT_SKINS[i];
+  return null;
+}
+function ensureSkinBgLayer() {
+  let lay = document.getElementById('skin-bg-layer');
+  if (!lay) {
+    lay = mkEl('div', 'skin-bg-layer');
+    lay.id = 'skin-bg-layer';
+    document.body.insertBefore(lay, document.body.firstChild);
+  }
+  return lay;
+}
+// 把「外部皮肤」落到页面：清掉上一个的 bodyAttr / link / 背景 / 变量，再挂新的。
+// 内置 5 套配色不走这里（它们在 skins.css 里，靠 html[data-skin]）。
+function applyExtSkin(sk) {
+  const lay = ensureSkinBgLayer();
+  document.documentElement.setAttribute('data-skin-bg', sk && sk.background ? '1' : '0');
+  // 1) bodyAttr：和 dsh 皮肤插件同一套（body[data-dsh-xxx]）
+  EXT_SKINS.forEach((s) => { if (s.bodyAttr) { try { document.body.removeAttribute(s.bodyAttr); } catch (e) { } } });
+  if (sk && sk.bodyAttr) { try { document.body.setAttribute(sk.bodyAttr, ''); } catch (e) { } }
+  // 2) skin.css
+  Object.keys(extSkinLinks).forEach((id) => {
+    if (!sk || id !== sk.id) { try { extSkinLinks[id].remove(); } catch (e) { } delete extSkinLinks[id]; }
+  });
+  if (sk && sk.css && !extSkinLinks[sk.id]) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = sk.css;
+    link.dataset.skinId = sk.id;
+    document.head.appendChild(link);
+    extSkinLinks[sk.id] = link;
+  }
+  // 3) 背景图 + 4) 变量覆盖
+  lay.style.backgroundImage = (sk && sk.background) ? 'url("' + sk.background + '")' : '';
+  lay.style.opacity = (sk && sk.background) ? String(sk.backgroundOpacity) : '0';
+  const rootStyle = document.documentElement.style;
+  if (window.__skinVarKeys) { window.__skinVarKeys.forEach((k) => rootStyle.removeProperty(k)); window.__skinVarKeys = []; }
+  if (sk && sk.vars) {
+    window.__skinVarKeys = Object.keys(sk.vars);
+    window.__skinVarKeys.forEach((k) => rootStyle.setProperty(k, String(sk.vars[k])));
+  }
+  // 5) 窗口/任务栏图标（皮肤带 desktopIcon 才换；切回内置就还原）
+  try {
+    if (window.app && window.app.skins && window.app.skins.applyIcon) window.app.skins.applyIcon(sk ? sk.id : '');
+  } catch (e) { /* 图标换不了不影响主题 */ }
+}
 function applySkin(k) {
-  document.documentElement.dataset.skin = k || 'aurora';
+  const ext = extSkinOf(k);
+  document.documentElement.dataset.skin = ext ? 'ext' : (k || 'aurora');
+  applyExtSkin(ext);
 }
 function currentThemeMode() {
   const v = localStorage.getItem(THEME_KEY);
@@ -756,6 +913,27 @@ function initTheme() {
       });
       menu.appendChild(b);
     });
+    // ---- 外部皮肤（2026-11-25）：来自 外壳\skins\<id>\skin.json，带背景图和 ico 的走这一组 ----
+    if (EXT_SKINS.length) {
+      menu.appendChild(mkEl('div', 'theme-sep'));
+      menu.appendChild(mkEl('div', 'theme-group', '皮肤'));
+      EXT_SKINS.forEach((sk) => {
+        const b = mkEl('button', 'theme-item' + (currentSkin() === sk.id ? ' on' : ''));
+        const dot = mkEl('span', 'theme-item-ico');
+        dot.innerHTML = '<span class="theme-skin-dot" style="background:' + (sk.accent || '#4f8cff') + '"></span>';
+        b.appendChild(dot);
+        b.appendChild(mkEl('span', 'theme-item-txt', sk.name));
+        if (sk.tagline || sk.author) b.title = [sk.tagline, sk.author ? '作者 ' + sk.author : ''].filter(Boolean).join(' · ');
+        b.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          localStorage.setItem(SKIN_KEY, sk.id);
+          applySkin(sk.id);
+          Array.prototype.forEach.call(menu.querySelectorAll('.theme-item'), (x) => x.classList.remove('on'));
+          b.classList.add('on');
+        });
+        menu.appendChild(b);
+      });
+    }
     document.body.appendChild(menu);
     const r = btn.getBoundingClientRect();
     menu.style.top = (r.bottom + 5) + 'px';
@@ -771,7 +949,14 @@ function initTheme() {
   const onSys = () => { if (currentThemeMode() === 'system') applyTheme('system'); };
   if (mq.addEventListener) mq.addEventListener('change', onSys);
   else if (mq.addListener) mq.addListener(onSys);
-  applyTheme(currentThemeMode());
+  // 外部皮肤清单先到手，再落主题 —— 否则 localStorage 里存的是皮肤 id 时会被当成内置色、闪回默认蓝。
+  const boot = (window.app && window.app.skins && window.app.skins.list)
+    ? window.app.skins.list().catch(() => [])
+    : Promise.resolve([]);
+  boot.then((list) => {
+    EXT_SKINS = Array.isArray(list) ? list : [];
+    applyTheme(currentThemeMode());
+  });
 }
 
 // ---------- 余额实时显示（DeepSeek 平台；密钥只在主进程，渲染层只拿数值） ----------
@@ -1294,6 +1479,16 @@ async function init() {
     tabsNav.appendChild(t);
     return t;
   });
+
+  // 2026-11-25：面板编辑入口（在场景标签栏末尾挂一个 ＋）—— 加网页 / 改网址 / 调网格都从这里进，
+  //   不用再手改 scenarios/*.json。只在本地场景生效（DSH 引擎那页不是场景）。
+  try {
+    const addTab = mkEl('button', 'tab tab-add', '＋');
+    addTab.title = '管理当前场景的面板（加网页 / 改网址 / 调网格）';
+    addTab.dataset.scId = '__add';
+    addTab.addEventListener('click', () => showPanelEditor(currentTab));
+    tabsNav.appendChild(addTab);
+  } catch (e) { /* 加不上也不影响标签栏 */ }
 
   // 标签栏交互（拖拽换位 + 未激活标签收成图标）交给热更新层：交互逻辑放 renderers.js ⇒ 以后调手感点 ⟳ 即可。
   safeStep('标签栏交互', () => {

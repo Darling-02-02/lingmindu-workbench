@@ -1,0 +1,16 @@
+/* 落日橘（sunset）—— 没有图片，纯渐变。 */
+body[data-dsh-sunset] .skin-bg-layer {
+  opacity: 1 !important;
+  background-image:
+    radial-gradient(1000px 520px at 78% -10%, rgba(251, 146, 60, .22), transparent 64%),
+    radial-gradient(760px 420px at 12% 100%, rgba(239, 93, 109, .14), transparent 62%),
+    linear-gradient(180deg, #140d0a 0%, #1c120d 52%, #120c09 100%) !important;
+}
+body[data-dsh-sunset] #scenebar {
+  background: rgba(24, 15, 11, .76);
+  border-bottom-color: rgba(251, 146, 60, .2);
+}
+body[data-dsh-sunset] .tab.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  background: rgba(251, 146, 60, .1);
+}

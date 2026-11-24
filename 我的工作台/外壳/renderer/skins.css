@@ -1,0 +1,37 @@
+/* ============================================================================
+   配色皮肤（2026-11-24）
+   只换强调色系，明暗两档（html[data-theme=dark|light]）原样不动。
+   挂 html[data-skin]，由标题栏「外观」菜单切换，localStorage 键 guiSkin 持久化。
+
+   为什么单独一个文件而不塞进 styles.css：
+     styles.css 296KB，追加要改写大文件、还有缓存/编码风险；这个文件只有几十行，
+     以后加皮肤就改这里，不会碰到主样式表。
+   为什么放最后加载：同特异性下后出现者胜；light 分支用 [data-theme=light][data-skin]
+     双选择器，特异性高于 styles.css:481 的 html[data-theme=light]，不会被盖回去。
+   ========================================================================== */
+
+/* 默认（aurora / 极光蓝）不覆盖，直接用 :root 的 #4f8cff */
+
+html[data-skin="forest"] { --accent:#3ddc84; --accent-soft:rgba(61,220,132,.14); --ring:rgba(61,220,132,.5); }
+html[data-theme="light"][data-skin="forest"] { --accent:#0f7a4d; --accent-soft:rgba(15,122,77,.12); --ring:rgba(15,122,77,.45); }
+
+html[data-skin="violet"] { --accent:#a78bfa; --accent-soft:rgba(167,139,250,.16); --ring:rgba(167,139,250,.5); }
+html[data-theme="light"][data-skin="violet"] { --accent:#6d43d8; --accent-soft:rgba(109,67,216,.12); --ring:rgba(109,67,216,.45); }
+
+html[data-skin="amber"] { --accent:#f0a35e; --accent-soft:rgba(240,163,94,.16); --ring:rgba(240,163,94,.5); }
+html[data-theme="light"][data-skin="amber"] { --accent:#b25e12; --accent-soft:rgba(178,94,18,.12); --ring:rgba(178,94,18,.45); }
+
+html[data-skin="rose"] { --accent:#f472b6; --accent-soft:rgba(244,114,182,.16); --ring:rgba(244,114,182,.5); }
+html[data-theme="light"][data-skin="rose"] { --accent:#be1e6e; --accent-soft:rgba(190,30,110,.12); --ring:rgba(190,30,110,.45); }
+
+/* 滚动条跟着强调色走（styles.css 末尾那条硬编码了 79,140,255） */
+html[data-skin] #grid::-webkit-scrollbar-thumb { background: var(--accent-soft); }
+html[data-skin] #grid::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* 外观菜单：分隔线 / 分组标题 / 色点 */
+.theme-sep { height: 1px; margin: 6px 8px; background: var(--line-1, rgba(255,255,255,.08)); }
+.theme-group { padding: 4px 12px 2px; font-size: 11px; letter-spacing: .04em; color: var(--text-dim); opacity: .8; }
+.theme-skin-dot {
+  width: 12px; height: 12px; border-radius: 50%; display: inline-block;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.18) inset;
+}

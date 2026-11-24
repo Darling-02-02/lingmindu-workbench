@@ -1,0 +1,27 @@
+{
+ "id": "myweb",
+ "name": "我的网页",
+ "description": "自己加的网页：整块面板内嵌一个站点。复制这份 json、改名改 url 就是一个新场景标签；把它塞进已有场景的 panels[] 也行。",
+ "layout": "grid",
+ "theme": "dark",
+ "cols": 5,
+ "panels": [
+  {
+   "id": "myweb-web",
+   "title": "示例站点",
+   "sub": "https://example.com · 内置网页",
+   "type": "embed",
+   "url": "https://example.com/",
+   "userAgent": "chrome",
+   "allowPopups": false,
+   "failHint": "打不开：① 确认这台机器能上网 ② 点右上「🌐 在浏览器打开」对照，看是站点问题还是内嵌问题",
+   "offHint": "已摘掉这个网页（省一份 guest 进程）。点「🔗 内置」切回来，登录状态记在本面板自己的分区 persist:embed-myweb-web 里，不用重新登录。",
+   "embedToggle": true,
+   "col": 1,
+   "row": 1,
+   "w": 5,
+   "h": 6
+  }
+ ],
+ "first": false
+}

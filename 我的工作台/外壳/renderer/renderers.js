@@ -17390,7 +17390,10 @@ renderers.neuron = (body, meta, head) => {
   let ry = -0.35, rx = 0.18, zoom = 1.42;
   let hover = null, sel = null, auto = false, disposed = false, raf = 0, last = 0;
   var ownerSkill = {};   // skill 节点 id → 面板 id（layout 贴 owner 用）
-  let labelMode = 1;   // 1=全部（默认，宿主 2026-10-26：所有点都要有文字标签） 0=自动 2=关
+  let labelMode = 0;   // 0=自动（默认）1=全部 2=关
+  // 2026-11-25：默认改成「自动」。原来默认「全部」，工作区+会话+计划上百个节点全挂文字，
+  //   在 1500×590 这种扁面板里必然糊成一团（用户反馈的"渲染错误"就是它）。
+  //   「自动」只给不打架的节点加标签，剩下的悬停/选中才显示；想看全的按钮点两下即可。
   let fx = true;       // 动效（星点/流光/呼吸）；卡就一键关
   let onlyMem = false; // 只看记忆：只留 内核/场景/私有记忆/提交链/共享文档
   let bornAt = 0;      // 载入时刻（入场动画：整图从中心展开）
@@ -17913,18 +17916,34 @@ renderers.neuron = (body, meta, head) => {
       n.ang = t;
       wsById[n.id] = n;
     });
-    nodes.filter(function (n) { return n.kind === 'session'; }).forEach(function (n) {
+    nodes.filter(function (n) { return n.kind === 'session'; }).forEach(function (n, ni) {
       var own = wsById['ws-' + String(n.wsId || '').replace(/[^A-Za-z0-9_-]/g, '_')];
-      if (!own) return;
+      // 2026-11-25 修「渲染错乱」：以前这里 if (!own) return; —— 一旦找不到所属工作区（记忆地图被改、
+      //   工作区 id 带怪字符），这一条会话节点就永远拿不到 x/y/z/r，projectRaw 里算出 NaN，
+      //   createRadialGradient 收到 NaN 直接抛 "The provided double value is non-finite"，
+      //   整个 drawInner 中断 ⇒ 画布只剩那段红字。现在给个兜底轨道，不让任何节点漏掉坐标。
+      if (!own) {
+        var ta = (ni / Math.max(1, nodes.length)) * Math.PI * 2;
+        own = { ang: ta, x: Math.cos(ta) * RW * 0.9, y: 0, z: Math.sin(ta) * RW * 0.9 };
+      }
       var k = n.sesIdx || 0;
       var t = (own.ang || 0) + (k - 3.5) * 0.055;              // 沿切线铺开
       var rad = Math.hypot(own.x, own.z) * (0.86 + (k % 3) * 0.045);
+      if (!isFinite(rad) || rad <= 0) rad = RW * 0.8;
       n.x = Math.cos(t) * rad;
       n.z = Math.sin(t) * rad;
       n.y = own.y + ((k % 2) ? 26 : -26) * (1 + Math.floor(k / 2) * 0.35);
       n.r = n.sesInfo && n.sesInfo.archived ? 3.2 : 4.2;
     });
     nodes.filter(function (n) { return n.kind === 'core'; }).forEach(function (n) { n.x = 0; n.y = 0; n.z = 0; });
+    // 最后一道保险：任何节点（包括以后新加的类型）坐标只要非有限，就地归零并给个最小半径。
+    //   宁可让它叠在中心，也不能让一个 NaN 把整张图画挂。
+    nodes.forEach(function (n) {
+      if (!isFinite(n.x)) n.x = 0;
+      if (!isFinite(n.y)) n.y = 0;
+      if (!isFinite(n.z)) n.z = 0;
+      if (!isFinite(n.r) || n.r <= 0) n.r = 4;
+    });
   }
 
   // ---------- 画布 ----------
@@ -17950,20 +17969,72 @@ renderers.neuron = (body, meta, head) => {
     markDirty();
     if (!raf) raf = requestAnimationFrame(loop);
   }
-  function project(n) {
+  // ★2026-11-25 修「渲染错乱」★
+  //   病根：焦距/偏移是写死的（f=820、+420），工作区那圈半径 1080 投出来约 713px，
+  //   而命令场景里这个面板只有 ≈1500×590（去掉上下留白后半个高度才 ~270px）⇒ 上下两半的
+  //   工作区/会话节点整片被裁到画面外，看着就像"节点乱飞 / 图谱是坏的"。
+  //   修法：每次画之前把全部节点按当前视角投影一遍，求出"刚好塞进视口"的等比系数 fitK，
+  //   乘在 zoom 上。旋转时用 0.25 的步进平滑，不会一下跳变；用户滚轮的 zoom 仍然在它之上生效。
+  var fitK = 1, fitKInit = false;
+  function projectRaw(n) {
+    // 2026-11-25：坐标兜底。只要 n.x/n.y/n.z 有人说谎（NaN/undefined），整条投影链就全变 NaN，
+    //   一进 createRadialGradient 就抛 non-finite、整帧报废。这里入口处先清一遍。
+    var nx = n.x, ny = n.y, nz = n.z;
+    if (!isFinite(nx)) nx = 0;
+    if (!isFinite(ny)) ny = 0;
+    if (!isFinite(nz)) nz = 0;
     var cy = Math.cos(ry), sy = Math.sin(ry);
-    var x1 = n.x * cy - n.z * sy;
-    var z1 = n.x * sy + n.z * cy;
+    var x1 = nx * cy - nz * sy;
+    var z1 = nx * sy + nz * cy;
     var cx0 = Math.cos(rx), sx0 = Math.sin(rx);
-    var y1 = n.y * cx0 - z1 * sx0;
-    var z2 = n.y * sx0 + z1 * cx0;
-    var f = 820;
-    var s = (f / (f + z2 + 420)) * zoom;
-    return { x: W / 2 + x1 * s, y: H / 2 + y1 * s, s: s, z: z2 };
+    var y1 = ny * cx0 - z1 * sx0;
+    var z2 = ny * sx0 + z1 * cx0;
+    var s = 820 / (820 + z2 + 420);
+    return { x: x1 * s, y: y1 * s, s: s, z: z2, x1: x1, y1: y1 };
+  }
+  // 2026-11-25：自适应缩放。原来是按 |x|/|y| 的对称半径算，节点分布一偏（工作区/会话集中在
+  //   一侧）就会有一半被裁到画外；现在算真实非对称包围盒，缩放之外再补一次居中平移。
+  var fitCX = 0, fitCY = 0;
+  function autoFit() {
+    var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.kind === 'core') continue;
+      var pa = projectRaw(n);
+      var ex = n.r * pa.s * 3.2;      // 把球半径也算进去，免得贴着边被切
+      if (pa.x - ex < minX) minX = pa.x - ex;
+      if (pa.x + ex > maxX) maxX = pa.x + ex;
+      if (pa.y - ex < minY) minY = pa.y - ex;
+      if (pa.y + ex > maxY) maxY = pa.y + ex;
+    }
+    if (!(minX <= maxX)) return fitK;
+    var z = Math.max(1, zoom);
+    var padX = Math.max(44, W * 0.045), padY = Math.max(32, H * 0.07);
+    var availW = Math.max(80, W - 2 * padX), availH = Math.max(80, H - 2 * padY);
+    var k = Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY), 1.5) / z;
+    if (!isFinite(k) || k <= 0) k = 1;
+    var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    if (!fitKInit) { fitK = k; fitCX = cx; fitCY = cy; fitKInit = true; }
+    else {
+      fitK += (k - fitK) * 0.25;
+      fitCX += (cx - fitCX) * 0.25;
+      fitCY += (cy - fitCY) * 0.25;
+    }
+    return fitK;
+  }
+  function project(n) {
+    var pa = projectRaw(n);
+    var s = pa.s * zoom * fitK;
+    return {
+      x: W / 2 + (pa.x1 * pa.s - fitCX) * zoom * fitK,
+      y: H / 2 + (pa.y1 * pa.s - fitCY) * zoom * fitK,
+      s: s, z: pa.z
+    };
   }
   function draw() {
     var ctx = cv.getContext('2d');
     try { drawInner(ctx); } catch (e) {
+      window.__neuronErr = String((e && e.stack) || e);   // 诊断：绘制异常留一份给页面读
       try {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, W, H);
@@ -17975,6 +18046,21 @@ renderers.neuron = (body, meta, head) => {
     }
   }
   function drawInner(ctx) {
+    autoFit();                      // 2026-11-25：先算"刚好装得下"的系数，再投影（见 project 上方的说明）
+    // 诊断钩子：页面里 window.__neuronDbg = true 之后，这里会把节点投影的包围盒记到
+    //   window.__neuronDbgInfo，用来确认"有没有节点被裁到画外"（不许常开，白算）。
+    if (window.__neuronDbg) {
+      var dbg = { W: W, H: H, fitK: fitK, nodes: nodes.length, out: 0, minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9 };
+      for (var di = 0; di < nodes.length; di++) {
+        var dn = nodes[di], dp = project(dn), rr = dn.r * dp.s * 1.6;
+        if (dp.x - rr < dbg.minX) dbg.minX = dp.x - rr;
+        if (dp.x + rr > dbg.maxX) dbg.maxX = dp.x + rr;
+        if (dp.y - rr < dbg.minY) dbg.minY = dp.y - rr;
+        if (dp.y + rr > dbg.maxY) dbg.maxY = dp.y + rr;
+        if (dp.x < -24 || dp.x > W + 24 || dp.y < -24 || dp.y > H + 24) dbg.out++;
+      }
+      window.__neuronDbgInfo = dbg;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     // 背景：中心微光
@@ -18206,6 +18292,8 @@ renderers.neuron = (body, meta, head) => {
         nring = np2 < 1 ? (1 - np2) : 0;
       }
       var r = safeR(n, p.s) * (fx ? (0.55 + 0.45 * kk) : 1) * (introOn ? (0.5 + 0.5 * np2) : 1);
+      // 2026-11-25：最后一个哨口 —— 任一坐标/半径非有限就跳过这个节点，绝不让它把整帧打断。
+      if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(r) || r <= 0) return;
 
       var alpha = dimmed(n) ? 0.18 : Math.max(0.35, 1 - p.z / 1500);
       if (introOn) alpha *= 0.25 + 0.75 * np2;
@@ -18577,8 +18665,7 @@ renderers.neuron = (body, meta, head) => {
   bFx.classList.toggle('on', fx);
   bLabel.addEventListener('click', function () {
     labelMode = (labelMode + 1) % 3;
-    bLabel.textContent = '标签：' + ['自动', '全部', '关'][labelMode];
-  });
+    bLabel.textContent = '标签：' + ['自动', '全部', '关'][labelMode];  });
   search.addEventListener('input', function () { q = String(search.value || '').trim().toLowerCase(); });
   cv.addEventListener('pointerdown', onDown);
   cv.addEventListener('pointermove', onMove);
@@ -18749,7 +18836,7 @@ renderers['plan-board'] = (body, meta) => {
     if (!items.length) {
       const e = el('div', 'pb-empty');
       e.appendChild(el('div', 'pb-empty-t', '今天没有排到计划'));
-      e.appendChild(el('div', 'pb-empty-s', '点「＋ 加一条」写第一条；或者用命令行：node 工具\\每日计划.mjs --seed'));
+      e.appendChild(el('div', 'pb-empty-s', '点「＋ 加一条」直接写；命令行也行：node 工具\\每日计划.mjs --add "标题" --time 08:30'));
       list.appendChild(e);
       return;
     }

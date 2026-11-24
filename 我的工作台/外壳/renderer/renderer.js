@@ -1068,6 +1068,12 @@ function showView(name) {
 // 场景 0：加载 Harness（带 token）
 // 注意：引擎未就绪时不再直接返回空界面——保留加载页进度条，
 // 引擎就绪后由 onHarnessReady 自动触发加载（原来必须手动点一次标签才会加载）。
+//
+// 2026-11-25：切场景再切回来会重播一遍 loading —— 原因是 dsh 前端拿到 token 后会把
+//   location 改写成不带 ?token 的形式，于是 webview 的 src 属性值和 getHarnessUrl()
+//   对不上，下面那句 setAttribute 就每次都重新导航一次（= 一整次 SPA 冷启动，几秒的 waiting）。
+//   现在记住"用哪个 token 已经挂载成功"，token 没变且 guest 还在原 origin 上就直接跳过。
+let harnessLoadedToken = null;
 async function loadHarness() {
   const ready = await window.app.isHarnessReady();
   if (!ready) {
@@ -1075,12 +1081,25 @@ async function loadHarness() {
     return;
   }
   const url = await window.app.getHarnessUrl();
+  const tk = (String(url).match(/[?&]token=([^&]+)/) || [])[1] || '';
+  let live = '';
+  try { live = (webview.getURL && webview.getURL()) || ''; } catch (e) { live = ''; }
+  let liveOrigin = '';
+  try { liveOrigin = live ? new URL(live).origin : ''; } catch (e) { liveOrigin = ''; }
+  const sameGuest = liveOrigin && String(url).indexOf(liveOrigin) === 0;
+  if (harnessLoadedToken !== null && harnessLoadedToken === tk && sameGuest) {
+    setStatus('Harness 已连接', false);
+    if (window.__bootFinish) window.__bootFinish();
+    return;
+  }
   if (webview.getAttribute('src') !== url) {
+    harnessLoadedToken = tk;
     webview.setAttribute('src', url);
     setStatus('加载界面…', true);
     if (window.__bootPaint) window.__bootPaint({ stage: 'ui', pct: 94, text: '界面渲染中…', detail: 'Harness 前端正在渲染' });
     watchHarnessReady();          // 轮询等待 SPA 真正渲染（did-finish-load 太早）
   } else {
+    harnessLoadedToken = tk;
     setStatus('Harness 已连接', false);
     if (window.__bootFinish) window.__bootFinish();
   }

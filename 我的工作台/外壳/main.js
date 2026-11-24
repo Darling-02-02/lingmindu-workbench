@@ -5071,19 +5071,8 @@ if (!gotLock) {
   // ---- 内嵌网页版 AI 走直连（261122）----
 // 原因：本机开了系统代理 127.0.0.1:7890，但代理进程没起 ⇒ guest 全部 ERR_PROXY_CONNECTION_FAILED。
 // 这 5 个站都在国内，直连更快也更稳；只改这几个分区，不动全局代理设置。
-function setupDirectWebAiProxies() {
-  const parts = ['persist:embed-sr-site-bl', 'persist:webai-deepseek', 'persist:webai-doubao',
-    'persist:webai-tongyi', 'persist:webai-chatglm', 'persist:webai-kimi'];
-  const ses = require('electron').session;
-  parts.forEach(function (name) {
-    try {
-      const s = ses.fromPartition(name);
-      if (s && s.setProxy) { s.setProxy({ mode: 'direct' }).catch(function () { /* ignore */ }); log('[webai] 分区直连: ' + name); }
-    } catch (e) { log("[webai] 分区直连失败 " + name + ": " + String((e && e.message) || e)); }
-  });
-}
 app.whenReady().then(async function () {
-  setupDirectWebAiProxies();  // 【已移除】任务栏角标（原来显示"当前窗口数"）：2026-10-15 按用户要求删除。
+  // 2026-11-25：分区直连（原 setupDirectWebAiProxies）随「接免费 AI」一起删除。
   //   原因：这台机器上 Windows 的徽章层会压过应用自画的叠加图标（TaskbarBadges=1 时永远显示系统的「1」），
   //   而关掉系统徽章后应用叠加图标也一并不显示 ⇒ 「角标 = 窗口数」在 Windows 这一层做不到 ✗。
   //   想数窗口时：鼠标悬停任务栏那颗按钮，Windows 会弹出各窗口的缩略图 ✓（详见 项目信息.md §47 补3）。
@@ -5149,193 +5138,11 @@ app.whenReady().then(async function () {
   });
 }
 
-// ===== 内置网页版 AI 桥：让任何会话/脚本能“免费问顶栏那 5 个网页版”（2026-09-21 第 10 轮）=====
-// 需求：会话想省钱 / API 额度用完时，把活儿外包给免费网页版（DeepSeek·豆包·通义·智谱·Kimi）。
-// 链路：脚本 → POST http://127.0.0.1:31239/webai/ask → broadcast('webai:task')
-//      → 渲染层 renderer\webai-bridge.js 在对应 <webview> 里输入问题、等回答 → IPC webai:done → 回包。
-// 为什么这么绕：会话（引擎侧）只会跑命令，进程外只有 HTTP 进得来；而网页版是**渲染层**的 <webview>
-//   （partition=persist:webai-<key>，登录态在那儿），主进程碰不到它的 DOM —— 所以必须借渲染层的手。
-// 安全：只监听 127.0.0.1，不对外；claim 机制保证多窗口时只有一个窗口干活（不会问两遍）。
-const WEB_AI_PORT = Number(process.env.WEB_AI_PORT || 31239);
-// 见文件末尾 listen 处的说明：true = 整套「接免费 AI」不启动（不监听端口、不生成顶栏图标）。
-const WEB_AI_DISABLED = true;
-const WEB_AI_KEYS = [
-  { key: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/' },
-  { key: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat/' },
-  { key: 'tongyi', name: '通义千问', url: 'https://tongyi.aliyun.com/qianwen/' },
-  { key: 'chatglm', name: '智谱清言', url: 'https://chatglm.cn/main/alltoolsdetail' },
-  { key: 'kimi', name: 'Kimi', url: 'https://www.kimi.com/' }
-];   // ⚠ 这份表必须和 renderer\renderers.js 的 WEB_AI 一致（check-gui.mjs 会比对）
-const webAiPending = new Map();
-let webAiSeq = 0;
-let lastFocusedWin = null;      // 由 createWindow 的 focus 事件维护（见上面那段注释：为什么必须定向派发）
-// ★多窗口安全（v3.17，2026-09-23）★
-// 每个窗口都是**独立一整套壳**（自带 preload + 渲染器 + 一份 webai-bridge.js），而分离窗口那份桥
-// 只在它自己那次加载/⟳ 时才更新 —— 用户分屏常驻时它可能很久都是旧代码。旧桥的判正文逻辑是老的，
-// 抢到活就把正文切错（实测：菜单墙 / 页脚 / 上一轮内容，现象像"你刚改的判据坏了"，能白查一整轮）。
-// 所以派发**必须挑窗口**，三道闸：
-//   闸 1：窗口加载完（did-finish-load）问一次它的桥版本；只挑**版本相等**的 ⇒ 旧桥窗口直接出局。
-//   闸 2：抢单必须来自派发目标。闸 3：交卷也必须来自派发目标（旧桥不一定申报）。
-const WEB_AI_BRIDGE_MIN = '3.17';               // 桥的**最低**可用版本（真正的派活基准见 WEB_AI_WANT）
-const webAiWinVer = new Map();                  // webContents.id → { ver, title }
-// ★2026-09-26★ 派活基准改成**动态 = 见过的最新桥版本**。
-//   原来拿上面那个常量判等 ⇒ 桥一升版（今天 3.17→3.24），所有新窗口都被判成"旧桥、不再派活"，
-//   现象却是"`[[peek]]` 偶尔能通、一打字必失败"，查了半天才发现是这儿 ⇒ 桥升级不该再改主进程。
-let WEB_AI_WANT = WEB_AI_BRIDGE_MIN;
-function webAiVerNum(v) { return String(v || '').split('.').map(function (x) { return parseInt(x, 10) || 0; }); }
-function webAiVerGt(a, b) {
-  const x = webAiVerNum(a), y = webAiVerNum(b);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); }
-  return false;
-}
-// 派发目标：**主窗口优先**（用户 2026-09-23 定的口径：分屏时以主窗口为基准）→ 聚焦 → 最后聚焦 → 任意
-// 为什么不再"聚焦优先"：分屏时焦点常在别的场景窗口上，任务就被派给那份可能很旧的桥了。
-function webAiTargetWindow() {
-  const E = require('electron').BrowserWindow;
-  const alive = function (w) { return w && !w.isDestroyed() && w.webContents && !w.webContents.isDestroyed(); };
-  const ready = function (w) {
-    if (!alive(w)) return false;
-    const rec = webAiWinVer.get(w.webContents.id);
-    return !!rec && rec.ver === WEB_AI_WANT;   // 没申报 / 不是最新版 = 不派（基准是动态的最新版）
-  };
-  const cands = [mainWindow, E.getFocusedWindow(), lastFocusedWin];
-  const all = E.getAllWindows().filter(alive);
-  for (let i = 0; i < all.length; i++) cands.push(all[i]);
-  for (let i = 0; i < cands.length; i++) if (ready(cands[i])) return cands[i];
-  // 一个都没申报（比如刚启动还在加载）：退回旧口径，让闸 2/闸 3 去挡 —— 总比"没窗口可用"强
-  for (let i = 0; i < cands.length; i++) if (alive(cands[i])) return cands[i];
-  return null;
-}
-function webAiAsk(key, text, opts) {
-  return new Promise(function (resolve) {
-    const k = String(key || '').trim();
-    const known = WEB_AI_KEYS.map(function (s) { return s.key; });
-    if (known.indexOf(k) < 0) { resolve({ ok: false, key: k, err: '不认识的 key：' + k + '（可用：' + known.join(' / ') + '）' }); return; }
-    const t = String(text || '');
-    if (!t.trim()) { resolve({ ok: false, key: k, err: '问题是空的' }); return; }
-    const target = webAiTargetWindow();
-    if (!target) { resolve({ ok: false, key: k, err: '工作台窗口还没起来（GUI 正在启动？）' }); return; }
-    const targetId = target.webContents.id;
-    const targetTitle = (function () { try { return target.getTitle(); } catch (e) { return ''; } })();
-    const id = 'w' + (++webAiSeq) + '-' + Date.now().toString(36);
-    const timeoutMs = Math.max(5000, Math.min(600000, Number((opts && opts.timeoutMs) || 180000)));
-    const timer = setTimeout(function () {
-      if (!webAiPending.has(id)) return;
-      webAiPending.delete(id);
-      resolve({ ok: false, id: id, key: k, err: '超时（' + Math.round(timeoutMs / 1000) + 's）：网页版没回完话，或那个窗口没在跑' });
-    }, timeoutMs + 8000);
-    webAiPending.set(id, { id: id, key: k, text: t, t0: Date.now(), resolve: resolve, timer: timer, claimed: false, winId: targetId, winTitle: targetTitle });
-    try { target.webContents.send('webai:task', { id: id, key: k, text: t, timeoutMs: timeoutMs }); }
-    catch (e) {
-      clearTimeout(timer); webAiPending.delete(id);
-      resolve({ ok: false, key: k, err: '派发失败：' + String((e && e.message) || e) });
-      return;
-    }
-    // 日志里带上窗口标题：多窗口时这一行就是"谁在抢单"的铁证
-    log('[webai] → ' + k + ' 任务 ' + id + '（' + t.slice(0, 24) + '…）→ 窗口「' + targetTitle + '」');
-  });
-}
-ipcMain.handle('webai:ask', function (e, key, text, opts) { return webAiAsk(key, text, opts); });
-ipcMain.handle('webai:claim', function (e, id) {
-  const t = webAiPending.get(String(id || ''));
-  if (!t || t.claimed) return false;          // 只有一个窗口能抢到
-  // 只认派发目标的抢单：旧版桥（别的窗口）就算收到了也不让它接活
-  if (t.winId && e.sender.id !== t.winId) {
-    log('[webai] ⛔ 忽略抢单：窗口 id ' + e.sender.id + ' ≠ 目标 ' + t.winId +
-      '（那是**旧桥**，正文可能被切错；关掉那个窗口再重开、或点它上面的 ⟳）');
-    return false;
-  }
-  t.claimed = true; t.winId = e.sender.id;
-  return true;
-});
-// 窗口加载完就来申报自己的桥版本 ⇒ 派发时只挑"版本相等"的窗口（旧桥窗口直接出局，不用等它抢单才发现）
-ipcMain.handle('webai:bridge', function (e, ver) {
-  const E = require('electron').BrowserWindow;
-  const w = E.fromWebContents(e.sender);
-  let title = '';
-  try { title = w ? w.getTitle() : ''; } catch (x) { }
-  const v = String(ver || '?');
-  const prev = webAiWinVer.get(e.sender.id);
-  webAiWinVer.set(e.sender.id, { ver: v, title: title });
-  if (webAiVerGt(v, WEB_AI_WANT)) WEB_AI_WANT = v;   // ★动态基准：谁报得比基准新，以后就派给这个版本
-  const isMain = !!w && w === mainWindow;
-  if (!prev || prev.ver !== v) {
-    log('[webai] 窗口申报桥版本 v' + v + (isMain ? '（主窗口）' : '（场景窗口）') + '：' + title +
-      (v === WEB_AI_WANT ? ' ✓' : ' ⚠ 低于当前基准 v' + WEB_AI_WANT + ' ⇒ 不派活给它（点它的 ⟳ 或关掉重开）'));
-  }
-  return { ver: v, want: WEB_AI_WANT, ok: v === WEB_AI_WANT, isMain: isMain };
-});
-// 体检用：谁申报了什么版本、当前会派给谁 —— 排障时一条命令看清，不用靠猜
-ipcMain.handle('webai:who', function () {
-  const E = require('electron').BrowserWindow;
-  const list = [];
-  webAiWinVer.forEach(function (rec, id) { list.push({ id: id, ver: rec.ver, title: rec.title, ok: rec.ver === WEB_AI_WANT }); });
-  const t = webAiTargetWindow();
-  let tTitle = ''; try { tTitle = t ? t.getTitle() : ''; } catch (e) { }
-  return { want: WEB_AI_WANT, windows: list, target: tTitle, pending: webAiPending.size };
-});
-ipcMain.handle('webai:done', function (e, id, r) {
-  const t = webAiPending.get(String(id || ''));
-  if (!t) return false;
-  // 闸 3：交卷也必须来自派发目标 —— 旧桥可能压根不申报、直接干完就交（那就把它的结果扔掉）
-  if (t.winId && e.sender.id !== t.winId) {
-    log('[webai] ⛔ 忽略交卷：窗口 id ' + e.sender.id + ' ≠ 目标 ' + t.winId + '（旧桥给的结果不可信，已丢弃）');
-    return false;
-  }
-  clearTimeout(t.timer);
-  webAiPending.delete(t.id);
-  log('[webai] ← ' + t.key + ' 任务 ' + t.id + '：' + (r && r.ok ? '成功 ' + String((r && r.text) || '').length + ' 字' : '失败 ' + ((r && r.err) || '')));
-  t.resolve(Object.assign({ id: t.id, key: t.key, elapsedMs: Date.now() - t.t0 }, r || {}));
-  return true;
-});
-ipcMain.handle('webai:state', function () {
-  return {
-    port: WEB_AI_PORT,
-    keys: WEB_AI_KEYS.map(function (s) { return s.key; }),
-    pending: Array.from(webAiPending.values()).map(function (t) {
-      return { id: t.id, key: t.key, claimed: t.claimed, ageMs: Date.now() - t.t0, winTitle: t.winTitle || '', text: t.text.slice(0, 40) };
-    })
-  };
-});
-const webAiServer = http.createServer(function (req, res) {
-  const json = function (code, obj) {
-    res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify(obj));
-  };
-  const u = (req.url || '/').split('?')[0];
-  if (u === '/webai/keys' && req.method === 'GET') { json(200, { keys: WEB_AI_KEYS }); return; }
-  if (u === '/webai/state' && req.method === 'GET') {
-    json(200, {
-      port: WEB_AI_PORT,
-      pending: Array.from(webAiPending.values()).map(function (t) { return { id: t.id, key: t.key, claimed: t.claimed, ageMs: Date.now() - t.t0 }; })
-    });
-    return;
-  }
-  // 排障：谁申报了哪个版本的桥、现在会派给哪个窗口（= 分屏/多窗口时"到底谁在答"，一条命令看清）
-  if (u === '/webai/who' && req.method === 'GET') {
-    const E = require('electron').BrowserWindow;
-    const list = [];
-    webAiWinVer.forEach(function (rec, id) { list.push({ id: id, ver: rec.ver, title: rec.title, ok: rec.ver === WEB_AI_WANT }); });
-    const t = webAiTargetWindow();
-    let tTitle = ''; try { tTitle = t ? t.getTitle() : ''; } catch (e) { }
-    json(200, { want: WEB_AI_WANT, windows: list, target: tTitle, stale: list.filter(function (x) { return !x.ok; }).length });
-    return;
-  }
-  if (u === '/webai/ask') {
-    if (req.method !== 'POST') { json(405, { ok: false, err: '这个端点要用 POST' }); return; }
-    let body = '';
-    req.on('data', function (c) { body += c; if (body.length > 1e6) req.destroy(); });
-    req.on('end', async function () {
-      let p = null;
-      try { p = JSON.parse(body || '{}'); } catch (e) { json(400, { ok: false, err: '请求体不是 JSON' }); return; }
-      const r = await webAiAsk(p.key, p.text, p);
-      json(r.ok ? 200 : 502, r);
-    });
-    return;
-  }
-  json(404, { ok: false, err: '没有这个端点', endpoints: ['GET /webai/keys', 'GET /webai/state', 'GET /webai/who', 'POST /webai/ask {key,text,timeoutMs}'] });
-});
-webAiServer.on('error', function (e) { log('[webai] 桥服务起不来（端口 ' + WEB_AI_PORT + '）：' + e.message); });
+// ★2026-11-25 用户要求彻底删掉「接免费 AI」★
+//   这里原来是「内置网页版 AI 桥」（约 190 行）：31239 HTTP 服务 + 5 个站点表 + 6 个 webai:* IPC
+//   + 多窗口 claim 派发 + 版本闸。已整段删除：不再监听端口、不再注册 IPC、也不再往渲染层派任务。
+//   想恢复请从 git 历史（commit 59ed43b 之前）取回。
+let lastFocusedWin = null;      // 仍被 createWindow 的 focus 事件与窗口定位逻辑使用（见 main.js 上部）
 // 2026-11-04：自动更新 / 强制更新模块不随公开版发布（文件已删除）。
 
 // ===== 原生浏览器侧栏挂载（官方 apps/desktop 能力搬迁 ③ · 2026-09-26）=====
@@ -5433,14 +5240,4 @@ setInterval(function () {
     log('[reload-panels] ' + target + ' ⇒ 重载 ' + hit.length + '/' + views.length + ' 个面板');
   } catch (e) { /* 命令文件忙/损坏都不致命，下一轮再试 */ }
 }, 500);
-
-// 2026-11-25 下线「接免费 AI」：桥服务不再监听 31239（顶栏那排图标同时在 renderers.js 里关掉）。
-//   理由：用户这边能多开会话窗口，5 个常驻网页端 AI 只是占 CPU/内存；之前 31239 还常报 EADDRINUSE。
-//   想恢复：把这里和 renderer\renderers.js 的 WEB_AI_DISABLED 一起改回 false，重启壳。
-if (!WEB_AI_DISABLED) {
-  webAiServer.listen(WEB_AI_PORT, '127.0.0.1', function () {
-    log('[webai] 网页版 AI 桥已就绪: http://127.0.0.1:' + WEB_AI_PORT + '/webai/keys（会话可用 scripts\\webai.mjs 问免费网页版）');
-  });
-} else {
-  log('[webai] 已按设置下线：桥服务不监听 ' + WEB_AI_PORT + '，顶栏图标也不生成');
-}
+

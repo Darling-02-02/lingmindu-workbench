@@ -12,7 +12,6 @@
   //   node "<工作台>\引擎\MCP\检查MCP.mjs"   ⇒ 每个 MCP 的工具数 + 「≈ N token/轮」
   //   （est 的公式与引擎一致：ceil(JSON.stringify(tools).length / 4) + 4，见引擎 packages\llm\token-meter\src\estimate.ts）
   //   2026-09-23：就是这里手拍的 30/14000 与漏改的「4 个 MCP」让面板显示出了错数字。
-  var WEB = '网页版 AI（免费，按需开）';   // 同一 grp 值的行会收进同一张折叠卡片
   var openGrp = {};                        // 折叠状态（弹窗每次重绘都整块重建，状态必须放在外面）
   var lastMsg = '';                        // 最近一条提示（重绘时保留，别让"已写入"一闪就没）
   var MCP = [
@@ -24,16 +23,9 @@
     // 每个只注册 1 个工具 ask（question / save_image / timeout_s），实测每站 ≈130 token/轮。
     // 数字虽小，但**每个会话每轮都注入**：不常用的站关掉就是白省（5 个全开 ≈660/轮）。
     // 它们**收进一张折叠卡片**（同一 grp 值 = 同一张卡；默认收起，点标题展开）——5 行平铺太占地方。
-    { id: 'mcp-webai-deepseek', label: '网页版·DeepSeek', tools: 1, est: 136, grp: WEB, desc: '免费问 DeepSeek 网页版：长文本 / 写代码（最难的那种先问它）' },
-    { id: 'mcp-webai-doubao',   label: '网页版·豆包',     tools: 1, est: 132, grp: WEB, desc: '免费问豆包：生图 / 生视频 / 日常问答' },
-    { id: 'mcp-webai-tongyi',   label: '网页版·通义千问', tools: 1, est: 130, grp: WEB, desc: '免费问通义：生图（备用）/ 中文长文（正文有时夹侧栏文字）' },
-    { id: 'mcp-webai-chatglm',  label: '网页版·智谱清言', tools: 1, est: 128, grp: WEB, desc: '免费问智谱：写代码（主力）/ 结构化输出' },
-    { id: 'mcp-webai-kimi',     label: '网页版·Kimi',     tools: 1, est: 132, grp: WEB, desc: '⚠ 当前打不进输入框（2026-09-23 实测），先别开' }
   ];
-  // ★2026-11-25 用户下线「接免费 AI」★：网页版 AI 那 5 行不再列出来（顶栏图标、桥服务、节点类型同批下线）。
   //   注意：这只是"面板不再显示/不再提供开关"，5 个 MCP 在 engine-side 是否还装着要看 cordis.patch.yml；
   //   真要彻底不注入 token，用 mcp-switch.mjs 或手写 `disabled: true` 关掉那几个 id。
-  MCP = MCP.filter(function (x) { return x.grp !== WEB; });
   var ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
     '<rect x="6.1" y="6.1" width="3.8" height="3.8" rx="1.1" stroke="currentColor" stroke-width="1.3"/>' +
     '<path d="M8 2.2v3.2M8 10.6v3.2M2.2 8h3.2M10.6 8h3.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +

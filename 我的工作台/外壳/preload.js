@@ -1,7 +1,5 @@
 // 工作台 preload — 安全暴露 IPC 给渲染层
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
-// 网页版 AI 桥：任务回调（渲染层注册，见下面 webai.onTask 的说明）
-let webAiTaskCb = null;
 
 
 const __wbHome = (process.env.DSH_CUSTOMER_HOME || '');
@@ -370,21 +368,6 @@ contextBridge.exposeInMainWorld('app', {
   },
   // 工具清单（2026-10-21）：顶栏 🛠 面板读 data\工具清单.json
   toolsCatalog: () => ipcRenderer.invoke('tools:catalog'),
-  // ---- 内置网页版 AI 桥（2026-09-21 第 10 轮）：把任务派给顶栏那 5 个免费网页版 ----
-  // 会话侧入口：HTTP 127.0.0.1:31239/webai/ask，或 node scripts\webai.mjs ask <key> "问题"
-  // onTask 只**替换回调**：真正的 ipcRenderer 监听在文件末尾只注册一次 ⇒ 渲染层被「⟳」重跑多少遍，
-  // 都不会出现"同一个任务被处理两次"（旧闭包自然作废）。
-  webai: {
-    ask: (key, text, opts) => ipcRenderer.invoke('webai:ask', key, text, opts),
-    claim: (id) => ipcRenderer.invoke('webai:claim', id),
-    done: (id, r) => ipcRenderer.invoke('webai:done', id, r),
-    state: () => ipcRenderer.invoke('webai:state'),
-    // v3.17：窗口加载完就申报自己那份桥的版本。主进程只把活派给"版本相等"的窗口 ——
-    // 这样分屏/分离窗口里那份**旧桥**永远抢不到活（它不会申报，也不会抢到单）。
-    bridge: (ver) => ipcRenderer.invoke('webai:bridge', ver),
-    who: () => ipcRenderer.invoke('webai:who'),
-    onTask: (cb) => { webAiTaskCb = (typeof cb === 'function') ? cb : null; }
-  },
   // 窗口控制（自定义标题栏）
   minimize: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
@@ -400,11 +383,3 @@ contextBridge.exposeInMainWorld('app', {
   }
 });
 
-// 网页版 AI 桥：**单分发器**（整个 preload 生命周期只注册这一个监听）
-ipcRenderer.on('webai:task', (e, t) => {
-  if (typeof webAiTaskCb === 'function') {
-    try { webAiTaskCb(t); } catch (err) { console.error('[webai] 任务处理异常', err); }
-  } else {
-    console.warn('[webai] 收到任务但渲染层还没注册回调（renderer\\webai-bridge.js 没加载？）', t && t.id);
-  }
-});

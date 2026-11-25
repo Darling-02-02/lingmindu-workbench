@@ -1005,6 +1005,48 @@ function clearSkinPaletteVars() {
   keys.forEach((k) => st.removeProperty(k));
   window.__skinPaletteKeys = [];
 }
+function rgbTriple(h) { return hexToRgb(h).join(','); }
+// ⭐ 2026-11-25「背景即主题」：每个面板按自己在窗口里的位置，去图里那块（3×3 分区）配色。
+//   左上角的面板吃图的左上角色调、右下的吃右下角 —— 这才叫"融进去"，
+//   而不是所有人共用同一块黑色玻璃。
+function applyPanelTints() {
+  const g = (window.__skinPalette || {}).grid;
+  const panels = document.querySelectorAll('.panel[data-panel-id]');
+  // 记一笔每次调用的现场（面板数量 / 第一个面板的宽），方便定位"到底哪一步没成"
+  try {
+    window.__tintLog = (window.__tintLog || []).concat([{
+      t: Date.now(), n: panels.length,
+      w: panels.length ? Math.round(panels[0].getBoundingClientRect().width) : 0,
+      grid: !!(g && g.length),
+    }]).slice(-24);
+  } catch (e) { /* ignore */ }
+  if (!panels.length) return;
+  const vw = Math.max(1, window.innerWidth), vh = Math.max(1, window.innerHeight);
+  for (let i = 0; i < panels.length; i++) {
+    const el = panels[i];
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const gx = Math.max(0, Math.min(2, Math.floor(((r.left + r.width / 2) / vw) * 3)));
+    const gy = Math.max(0, Math.min(2, Math.floor(((r.top + r.height / 2) / vh) * 3)));
+    const cell = (g && g[gy]) ? g[gy][gx] : null;
+    const st = el.style;
+    if (!cell) {
+      st.removeProperty('--panel-tint'); st.removeProperty('--panel-rgb');
+      st.removeProperty('--panel-tint-2'); st.removeProperty('--panel-line');
+      continue;
+    }
+    st.setProperty('--panel-tint', cell.glass);
+    st.setProperty('--panel-rgb', rgbTriple(cell.glass));
+    st.setProperty('--panel-tint-2', cell.tint);
+    st.setProperty('--panel-line', rgba(cell.tint, '0.18'));
+  }
+}
+let tintRaf = 0;
+try { window.__applyPanelTints = applyPanelTints; } catch (e) { /* ignore */ }
+window.addEventListener('resize', () => {   // 窗口尺寸变了，面板落到的格子就变了，要重算
+  if (tintRaf) return;
+  tintRaf = requestAnimationFrame(() => { tintRaf = 0; applyPanelTints(); });
+});
 function applySkinPalette(sk) {
   const api = (window.app && window.app.skins && window.app.skins.palette) ? window.app.skins.palette : null;
   if (!api) return;
@@ -1015,32 +1057,79 @@ function applySkinPalette(sk) {
     if (!p || !p.ok || !p.panel) { clearSkinPaletteVars(); return; }
     const dark = p.dark || '#0a0d12';
     const acc = p.accent || '#8fa6bf';
-    // 卡片是「深色玻璃」不是「图的平均色」：
-    //   图越亮，压深的那层就越实（否则 0.59 的灰盖在 186 亮度的图上，变成中灰 + 白字，字全糊）；
-    //   图越暗，就可以透得更狠，露出更多画面。
+    const acc2 = p.accent2 || tint(acc, 0.28);
+    // 关键分水岭：卡片底色不再取「纯黑」，取「图色压深后的玻璃」——
+    // 面板于是自带图里那抹颜色，界面像透过彩色玻璃看这张图，而不是图上盖黑块。
+    const glass = p.glass || p.panel || '#12161f';
     const lum = Number(p.lum);
     const L = Number.isFinite(lum) ? lum : 40;
-    const panelA = L > 55 ? 0.74 : (L > 35 ? 0.66 : 0.52);
+    // 颜色本身已经够深（图色 × 0.26），所以 alpha 可以比"纯黑玻璃"时代更透一点，多露画面。
+    // 面板底的浓淡。亮图（L>55）反而要更"实"一点：图越亮，相同 alpha 下"图透进面板"的绝对亮度越高，
+    // 面板里的字就越糊。实测 huiye（L=68）在 0.62 时面板内平均亮度到 110~124，字发飘；提到 0.68 落回 ~74。
+    const panelA = L > 55 ? 0.68 : (L > 35 ? 0.60 : 0.48);
     // 文字也跟着图走色温：暖图给暖白、冷图给冷白，不然一张暖调风景上贴冷白字，整台发金鱼眼。
     const warm = hexToRgb(dark)[0] > hexToRgb(dark)[2];
+    const sw = Array.isArray(p.swatches) ? p.swatches : [];
     const vars = {
       '--bg': dark,
-      '--bg-panel': rgba(dark, panelA.toFixed(2)),
-      '--bg-panel-hover': rgba(dark, Math.min(0.92, panelA + 0.14).toFixed(2)),
-      '--border': rgba(tint(acc, 0.35), '0.20'),
+      '--bg-panel': rgba(glass, panelA.toFixed(2)),
+      '--bg-panel-hover': rgba(tint(glass, 0.08), Math.min(0.9, panelA + 0.14).toFixed(2)),
+      '--glass': glass,
+      '--glass-rgb': rgbTriple(tint(glass, 0.06)),
+      '--glass-a': panelA.toFixed(2),
+      '--glass-line': rgba(tint(glass, 0.45), '0.20'),
+      '--border': rgba(tint(acc, 0.35), '0.22'),
       '--accent': acc,
+      '--accent-2': acc2,
+      '--accent-rgb': rgbTriple(acc),
+      '--accent2-rgb': rgbTriple(acc2),
       '--accent-soft': rgba(acc, '0.16'),
+      '--accent2-soft': rgba(acc2, '0.14'),
       '--ring': rgba(acc, '0.45'),
-      '--tech-line': rgba(tint(acc, 0.3), '0.16'),
-      '--text': warm ? '#f2ede6' : '#e8ecf3',
-      '--text-dim': warm ? 'rgba(226,215,203,.72)' : 'rgba(163,173,189,.76)',
+      '--tech-line': rgba(tint(acc, 0.3), '0.18'),
+      '--tech-line-2': rgba(tint(acc, 0.6), '0.36'),
+      '--text': warm ? '#f6f1ea' : '#eef2f8',
+      '--text-dim': warm ? 'rgba(228,218,206,.74)' : 'rgba(170,180,196,.76)',
+      '--swatch-1': sw[0] || acc,
+      '--swatch-2': sw[1] || acc2,
+      '--swatch-3': sw[2] || tint(acc, 0.4),
     };
     const st = document.documentElement.style;
     clearSkinPaletteVars();
     window.__skinPaletteKeys = Object.keys(vars);
     window.__skinPaletteKeys.forEach((k) => st.setProperty(k, String(vars[k])));
     window.__skinPalette = p;
+    // 面板的"图色"要一遍遍补，原因有两个，都实测过：
+    //   ① 取色 IPC 比首屏快 —— 取到色那一刻 .panel 在 DOM 里但还没布局，getBoundingClientRect 是 0×0，会被跳过；
+    //   ② 场景是"重渲染"的 —— 切一次场景 / 换一次皮肤，.panel 元素整个换掉，新元素身上没有内联变量，
+    //      而"试 N 次就停"的定时器早停了 ⇒ 面板又变回兜底色。
+    // 所以不用一次性定时器，而是：面板区 DOM 一变就重刷（300ms 节流）+ 4 秒低频兜底（窗口不可见时不跑）。
+    try { applyPanelTints(); } catch (err) { window.__tintErr = String(err && err.stack || err); }
+    watchPanelTints();
   }).catch(() => { /* 取色失败就退回 skin.json 里写死的兜底色 */ });
+}
+// 让"面板图色"自己活下去：DOM 变化触发 + 低频兜底。只读 rect、只写十几个内联变量，开销可忽略。
+function watchPanelTints() {
+  if (window.__tintWatch) return;
+  window.__tintWatch = 1;
+  let timer = 0;
+  const kick = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      try { applyPanelTints(); } catch (err) { window.__tintErr = String(err && err.stack || err); }
+    }, 300);
+  };
+  const host = document.getElementById('grid') || document.body;
+  if (host) {
+    try {
+      const mo = new MutationObserver(kick);
+      mo.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+      window.__tintMO = mo;
+    } catch (e) { /* ignore */ }
+  }
+  window.__tintPoll = setInterval(() => {
+    if (document.visibilityState === 'visible') kick();
+  }, 4000);
 }
 function currentThemeMode() {
   const v = localStorage.getItem(THEME_KEY);
@@ -1220,6 +1309,7 @@ function loadCardThemes() {
         try { U.applyCardTheme(p, p.dataset.panelId); } catch (e) { /* ignore */ }
       });
     }
+    applyPanelTints();   // 面板按位置吃分区色（取色可能比渲染早到，这里补一次）
     return window.__CARD_THEMES;
   }).catch(() => ({}));
 }

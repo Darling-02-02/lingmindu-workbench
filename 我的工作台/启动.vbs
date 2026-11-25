@@ -27,7 +27,7 @@ Err.Clear
 Set http = Nothing
 
 Dim ports, pi
-ports = Array(9224, 9223)
+ports = Array(9225, 9224, 9223)
 For pi = 0 To UBound(ports)
   Set http2 = CreateObject("MSXML2.ServerXMLHTTP.6.0")
   http2.setTimeouts 1500, 1500, 2000, 2500

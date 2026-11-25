@@ -5229,13 +5229,88 @@ html[data-theme="light"] .kflow { background: rgba(250, 251, 253, .975); }
    图才是主角，节点和文字靠 panel 上的 backdrop-filter 磨砂 + canvas 里的暗角够分辨。
    canvas 每帧 clearRect，自己是透明的，所以底板一薄图就直接透上来。
    特异性 (0,3,1) 压得住皮肤里的 body[data-dsh-xxx] .panel (0,2,1)。 */
-html[data-skin-bg="1"] .panel[data-panel-id="cmd-neuron"],
-html[data-skin-bg="1"] .panel[data-panel-id="cmd-plan"] {
-  background: color-mix(in srgb, var(--bg-panel, #10131a) 44%, transparent);
+/* 神经元/计划两张卡的特例已经在「背景即主题」段里说明并删掉了 —— 它们现在和别的卡片同一套材质。 */
+
+/* ==================== 背景即主题（2026-11-25）====================
+   原则：界面上每一块"不透明的黑"，都换成「背景图里那个位置的颜色压深」。
+   - 变量全部由 renderer.js 的 applySkinPalette() / applyPanelTints() 从图里算出来；
+   - 换任何一张图，顶栏、场景栏、面板、描边、强调色、滚动条一起换，不用手写 skin.json；
+   - 整段挂在 html[data-skin-bg="1"] 下 —— 没背景图时一条都不生效，退回原来的暗色。
+   这一段的特异性（1 属性 + 1 类）高于 styles.css 里那些裸选择器，
+   所以不用 !important 就能盖掉写死的 #0d1017 / #161b27 / rgba(122,178,255,…)。 */
+
+/* ① 标题栏：从图色里取的玻璃，上亮下暗，底部一条图色细线 */
+html[data-skin-bg="1"] #titlebar {
+  background: linear-gradient(180deg,
+    rgba(var(--glass-rgb), calc(var(--glass-a, .6) + 0.32)),
+    rgba(var(--glass-rgb), calc(var(--glass-a, .6) + 0.18)));
+  border-bottom: 1px solid var(--glass-line);
 }
-html[data-skin-bg="1"] .panel[data-panel-id="cmd-neuron"] > .panel-head,
-html[data-skin-bg="1"] .panel[data-panel-id="cmd-plan"] > .panel-head {
-  background: color-mix(in srgb, var(--bg-panel, #10131a) 30%, transparent);
+
+/* ② 场景标签栏：比标题栏透一点，让图的走势透上来
+      ⚠ 这里必须 !important：styles.css 更早的"省电版"块（3833 行附近）写的是
+        #scenebar { background: rgba(13,16,24,.80) !important; backdrop-filter: none !important }
+        —— 带 !important 的声明永远压过不带的那条，不管特异性多高。 */
+html[data-skin-bg="1"] #scenebar {
+  background: linear-gradient(180deg,
+    rgba(var(--glass-rgb), calc(var(--glass-a, .6) + 0.24)),
+    rgba(var(--glass-rgb), var(--glass-a, .6))) !important;
+  backdrop-filter: blur(14px) saturate(1.12) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.12) !important;
+  border-bottom-color: var(--glass-line) !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .03) !important;
 }
+
+/* ③ 面板区背景：两道图色光斑（主色在左上、次色在右下），替掉原来那道固定蓝光 */
+html[data-skin-bg="1"] #grid {
+  background:
+    radial-gradient(920px 540px at 16% -4%, rgba(var(--accent-rgb), .11), transparent 68%),
+    radial-gradient(760px 480px at 90% 104%, rgba(var(--accent2-rgb), .10), transparent 70%);
+}
+
+/* ④ 面板本体：底色 = 该面板所在位置那块图色（--panel-rgb），不是纯黑；
+      顶部再叠一道同色微光，像玻璃的斜面反光。 */
+html[data-skin-bg="1"] .panel {
+  border-color: var(--panel-line, var(--tech-line));
+  background:
+    linear-gradient(180deg,
+      rgba(var(--panel-rgb, 122, 178, 255), .20) 0,
+      rgba(var(--panel-rgb, 122, 178, 255), .02) 140px),
+    rgba(var(--panel-rgb, 122, 178, 255), var(--glass-a, .6));
+}
+html[data-skin-bg="1"] .panel:hover {
+  border-color: rgba(var(--accent-rgb), .40);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 12px 30px rgba(0, 0, 0, .34);
+}
+
+/* ⑤ 面板标题栏：比面板体亮一档的图色，底边用该面板的图色细线 */
+html[data-skin-bg="1"] .panel-head {
+  background: linear-gradient(180deg,
+    rgba(var(--panel-rgb, 122, 178, 255), .30),
+    rgba(var(--panel-rgb, 122, 178, 255), .12));
+  border-bottom-color: var(--panel-line, var(--tech-line));
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+}
+
+/* ⑥ 面板顶部那条 1px 反光线：改成"主色 → 透明"，跟着图走 */
+html[data-skin-bg="1"] .panel::before {
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), .44), transparent);
+}
+
+/* ⑦ 滚动条：不再固定蓝，取图的强调色 */
+html[data-skin-bg="1"] #grid::-webkit-scrollbar-thumb,
+html[data-skin-bg="1"] .panel-body::-webkit-scrollbar-thumb {
+  background: rgba(var(--accent-rgb), .30);
+}
+html[data-skin-bg="1"] #grid::-webkit-scrollbar-thumb:hover,
+html[data-skin-bg="1"] .panel-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--accent-rgb), .48);
+}
+
+/* ⑧ 神经元/计划这两张卡片的背景由 canvas 自绘（canvas 是面板的子元素，画在面板底色之上），
+      所以不需要为它们单独压面板底色 —— 统一走 ④，整台才是同一套材质。
+      （曾经在这里给它们写过 color-mix 0.44 / rgba .10 的特例，
+        结果是这两张卡变成半透明，文字直接压在图和节点上，已经删掉。） */
 
 

@@ -1558,10 +1558,15 @@ ipcMain.handle('skins:apply-icon', (e, skinId) => {
 // 「背景直接铺满整个工作台，卡片配色跟着这张图走」—— 卡片底色/描边/强调色都从图里算，
 // 换任何一张图都自动配套，不用手写 skin.json 的 vars。
 // 用主进程 nativeImage 缩到 32×32 再读位图：不碰 canvas，也就没有 file:// 污染的问题。
-const PALETTE_SIZE = 32;
+const PALETTE_SIZE = 48;   // 3×3 分区取色后每格约 16×16 像素，比原来 32 更经得起"一格代表一块界面"
 const paletteCache = new Map();   // absPath -> {mtimeMs,size,palette}
 function rgb2hex(r, g, b) { return '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
 function mix(a, b, t) { return a.map((v, i) => v * (1 - t) + b[i] * t); }
+function hexToArr(h) {
+  const s = String(h || '').replace('#', '');
+  const v = parseInt(s, 16);
+  return Number.isFinite(v) ? [(v >> 16) & 255, (v >> 8) & 255, v & 255] : [128, 128, 128];
+}
 // rgb ↔ hsl：把主色"提成强调色"用（保色相、推饱和、抬亮度），避免直接拿米灰当高亮色。
 function rgbToHsl(c) {
   const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
@@ -1619,11 +1624,17 @@ function paletteOfImage(absPath) {
   const scale = Math.min(PALETTE_SIZE / sz.width, PALETTE_SIZE / sz.height, 1);
   const small = scale < 1 ? img.resize({ width: Math.max(1, Math.round(sz.width * scale)), height: Math.max(1, Math.round(sz.height * scale)), quality: 'good' }) : img;
   const bmp = small.toBitmap();   // BGRA
+  const sw = small.getSize().width, sh = small.getSize().height;
   const n = Math.floor(bmp.length / 4);
   if (!n) return null;
   let sr = 0, sg = 0, sb = 0, cnt = 0;
   // 主色：把颜色量化到 4 位/通道的桶里投票，再按「饱和度 × 出现次数」挑代表色。
   const buckets = new Map();
+  // ⭐ 2026-11-25「背景即主题」：把图切成 3×3，每格单独算平均色。
+  //    面板按自己在窗口里的位置吃掉对应那块图的颜色 —— 界面才像"透过玻璃看这张图"，
+  //    而不是"一张图上面盖了几块黑玻璃"。
+  const grid = [[], [], []];
+  for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) grid[gy][gx] = { r: 0, g: 0, b: 0, c: 0 };
   for (let i = 0; i < n; i++) {
     const b = bmp[i * 4], g = bmp[i * 4 + 1], r = bmp[i * 4 + 2], a = bmp[i * 4 + 3];
     if (a < 24) continue;
@@ -1632,6 +1643,12 @@ function paletteOfImage(absPath) {
     const cur = buckets.get(key) || { r: 0, g: 0, b: 0, c: 0 };
     cur.r += r; cur.g += g; cur.b += b; cur.c++;
     buckets.set(key, cur);
+    if (sw && sh) {
+      const px = i % sw, py = (i - px) / sw;
+      const cx = Math.min(2, Math.floor(px * 3 / sw)), cy = Math.min(2, Math.floor(py * 3 / sh));
+      const cell = grid[cy][cx];
+      cell.r += r; cell.g += g; cell.b += b; cell.c++;
+    }
   }
   if (!cnt) return null;
   const avg = [sr / cnt, sg / cnt, sb / cnt];
@@ -1649,13 +1666,54 @@ function paletteOfImage(absPath) {
   // 保留色相、把饱和度和亮度推到能当高亮用的位置，颜色关系不乱。
   const accent = boostAccent(accentBase);
   const base = avg.slice();
+  // ---- 「背景即主题」用的三样新东西（2026-11-25）----
+  // 色板：按「出现次数 × 饱和度」排。次数决定"这是不是画面的主调"，
+  // 饱和度决定"它够不够格当颜色用"（一片纯灰不管占多大面积都当不了强调色）。
+  const swatches = [];
+  buckets.forEach((v) => {
+    const rgb = [v.r / v.c, v.g / v.c, v.b / v.c];
+    const lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+    if (lum < 0.05 || lum > 0.97) return;
+    const sat = rgbToHsl(rgb)[1];
+    swatches.push({ hex: rgb2hex(rgb[0], rgb[1], rgb[2]), w: v.c * (0.35 + sat * 2.2) });
+  });
+  swatches.sort((a, b) => b.w - a.w);
+  const top = swatches.slice(0, 6).map((s) => s.hex);
+  // 次级强调色：找一个和主色色相拉开 >28° 的。找不到就提亮主色顶上 ——
+  // 不管换成什么图，--accent-2 都有值，CSS 里不用写兜底。
+  const h0 = rgbToHsl(accentBase)[0];
+  let accent2 = '';
+  for (const s of swatches) {
+    const c = hexToArr(s.hex);
+    const dh = Math.abs(((rgbToHsl(c)[0] - h0 + 540) % 360) - 180);
+    if (dh > 28) { const b2 = boostAccent(c); accent2 = rgb2hex(b2[0], b2[1], b2[2]); break; }
+  }
+  if (!accent2) { const b2 = mix(accent, [255, 255, 255], 0.28); accent2 = rgb2hex(b2[0], b2[1], b2[2]); }
+  // 3×3 分区：面板按自己在窗口里的位置吃对应那块图的颜色。
+  // glass = 那块图色压深到约 0.2 亮度 —— 既透得出色相，又压得住白字（面板的文字对比度全靠它）。
+  const gridOut = grid.map((row) => row.map((c) => {
+    if (!c.c) return null;
+    const rgb = [c.r / c.c, c.g / c.c, c.b / c.c];
+    const g1 = mix(rgb, [0, 0, 0], 0.72), t1 = mix(rgb, [255, 255, 255], 0.16);
+    return {
+      hex: rgb2hex(rgb[0], rgb[1], rgb[2]),
+      glass: rgb2hex(g1[0], g1[1], g1[2]),
+      tint: rgb2hex(t1[0], t1[1], t1[2]),
+      lum: Math.round((0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 2.55),
+    };
+  }));
+  const glassAvg = mix(base, [0, 0, 0], 0.74);
   const palette = {
     avg: avg.map(Math.round),
     accent: rgb2hex(accent[0], accent[1], accent[2]),
+    accent2,
     accentRaw: rgb2hex(accentBase[0], accentBase[1], accentBase[2]),
     dark: rgb2hex(...mix(base, [0, 0, 0], 0.86)),      // 页面底色：平均色压到极暗
     panel: rgb2hex(...mix(base, [0, 0, 0], 0.5)),      // 卡片基色
+    glass: rgb2hex(glassAvg[0], glassAvg[1], glassAvg[2]),   // 全局玻璃色（图的平均色调压深）
     light: rgb2hex(...mix(base, [255, 255, 255], 0.55)),
+    swatches: top,
+    grid: gridOut,
     lum: Math.round((0.2126 * avg[0] + 0.7152 * avg[1] + 0.0722 * avg[2]) / 2.55),
     size: { w: sz.width, h: sz.height },
   };

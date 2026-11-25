@@ -18203,7 +18203,7 @@ renderers.neuron = (body, meta, head) => {
     var pad = 64;
     var k = (Math.max(W, H) + pad * 2) / Math.max(W, H);
     ctx.save();
-    try { ctx.filter = 'blur(16px) saturate(.78) brightness(.68)'; } catch (e) { /* 老内核不认 filter 就按原样画 */ }
+    try { ctx.filter = 'blur(14px) saturate(.82) brightness(.66)'; } catch (e) { /* 老内核不认 filter 就按原样画 */ }
     ctx.globalAlpha = a;
     ctx.drawImage(bgImg, (W - dw * k) / 2, (H - dh * k) / 2, dw * k, dh * k);
     ctx.restore();

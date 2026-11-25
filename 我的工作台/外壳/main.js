@@ -1662,6 +1662,35 @@ function paletteOfImage(absPath) {
   paletteCache.set(ck, { mtimeMs, size, palette });
   return palette;
 }
+// ---- 背景图的 data URL（2026-11-25，给内嵌的 dsh 页面注入用）----
+// dsh 页面是 http://127.0.0.1:3093，Chrome 不允许 http 页面引用 file:// 的图，
+// 所以只能把图转成 base64 塞进去。原图 2.2MB 会被缩到 1920 宽、JPEG q82，大约 300~500KB。
+function bgFileOf(skinId) {
+  const sid = String(skinId || '');
+  if (sid === '_user') { const ub = readUserBg(); return ub ? ub.file : ''; }
+  const sk = listSkins().find((s) => s.id === sid);
+  return (sk && sk.backgroundFile) ? sk.backgroundFile : '';
+}
+ipcMain.handle('skins:bg-dataurl', (e, skinId, maxW) => {
+  const file = bgFileOf(skinId);
+  if (!file) return { ok: false, err: '这套皮肤没有背景图' };
+  const key = file + '|' + (maxW || 1920);
+  const hit = paletteCache.get('dataurl:' + key);
+  if (hit) return hit.palette;
+  let img = null;
+  try { img = nativeImage.createFromPath(file); } catch (err) { return { ok: false, err: '读不出这张图' }; }
+  if (!img || img.isEmpty()) return { ok: false, err: '读不出这张图' };
+  const sz = img.getSize();
+  const targetW = Math.min(Number(maxW) || 1920, sz.width);
+  const shrunk = targetW < sz.width ? img.resize({ width: targetW, quality: 'good' }) : img;
+  let buf = shrunk.toJPEG(82);
+  // 透明 PNG 转 JPEG 会变黑底，这种情况退回 PNG
+  if (!buf || !buf.length) buf = shrunk.toPNG();
+  const mime = (shrunk === img && /\.png$/i.test(file)) ? 'image/png' : 'image/jpeg';
+  const out = { ok: true, file, w: shrunk.getSize().width, h: shrunk.getSize().height, bytes: buf.length, url: 'data:' + mime + ';base64,' + buf.toString('base64') };
+  paletteCache.set('dataurl:' + key, { mtimeMs: 0, size: 0, palette: out });
+  return out;
+});
 ipcMain.handle('skins:palette', (e, skinId) => {
   const sid = String(skinId || '');
   let file = '';

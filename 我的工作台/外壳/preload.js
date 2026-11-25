@@ -79,7 +79,8 @@ contextBridge.exposeInMainWorld('app', {
     pickCardBg: (panelId) => ipcRenderer.invoke('skins:pick-card-bg', panelId),
     setCardOpacity: (panelId, v) => ipcRenderer.invoke('skins:set-card-opacity', panelId, v),
     clearCardBg: (panelId) => ipcRenderer.invoke('skins:clear-card-bg', panelId),
-    palette: (skinId) => ipcRenderer.invoke('skins:palette', skinId)
+    palette: (skinId) => ipcRenderer.invoke('skins:palette', skinId),
+    bgDataUrl: (skinId, maxW) => ipcRenderer.invoke('skins:bg-dataurl', skinId, maxW)
   },
   // ---- 神经元：点开一条对话（2026-11-25）----
   neuron: {

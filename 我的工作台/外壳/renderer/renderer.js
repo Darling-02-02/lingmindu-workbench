@@ -828,6 +828,7 @@ function applyUserBg(bg) {
   USER_BG = (bg && bg.url) ? { url: bg.url, name: bg.name || '', opacity: Number(bg.opacity) || 0.55 } : null;
   refreshBgLayer(extSkinOf(currentSkin()));
   applySkinPalette(extSkinOf(currentSkin()));   // 换了图就重新取一次色，卡片配色跟着走
+  injectSkinIntoHarness(true);                  // 换了图，内嵌的 dsh 页面跟着换（2026-11-25）
 }
 // 把「外部皮肤」落到页面：清掉上一个的 bodyAttr / link / 背景 / 变量，再挂新的。
 // 内置 5 套配色不走这里（它们在 skins.css 里，靠 html[data-skin]）。
@@ -867,7 +868,87 @@ function applySkin(k) {
   const ext = extSkinOf(k);
   document.documentElement.dataset.skin = ext ? 'ext' : (k || 'aurora');
   applyExtSkin(ext);
+  injectSkinIntoHarness();   // 内嵌的 dsh 页面也铺同一张底（2026-11-25）
 }
+// ---- 把背景图同步进内嵌的 dsh 页面（2026-11-25）----
+// 要求：「整个背景图，包括当前的 DeepSeek Harness、神经元页面」都要一套。神经元是本进程自绘的 canvas，
+// 跟着 .panel 的磨砂走就够了；dsh 页面是 webview 里另一个 http 页面，只能注入。
+//
+// 两个硬约束：
+//   1) dsh 是 http://127.0.0.1:3093，Chrome 不许 http 页面引用 file:// 的图 ⇒ 必须塞 base64。
+//   2) dsh 的类名是 CSS Modules 带 hash（pI_x6G_frame 这种），版本一变就失效 ⇒ 不按类名，按
+//      「面积占视口 30% 以上 + 原本是不透明 rgb()」这两个条件现场扫，扫到就把底色改成半透明。
+//      改完的底色是 rgba(...)，正则只认 rgb(...)，所以重复执行天然幂等，不用打标记。
+let skyInjectBusy = false;
+let skyInjectAt = 0;
+function harnessSkinScript(url, alpha) {
+  return '(function(){'
+    + 'var BG=' + JSON.stringify(url) + ';var A=' + Number(alpha) + ';'
+    + 'var old=document.getElementById("wb-skin-bg");'
+    + 'if(old){old.style.backgroundImage="url(\\""+BG+"\\")";}else{'
+    + 'var lay=document.createElement("div");lay.id="wb-skin-bg";'
+    + 'lay.style.cssText="position:fixed;inset:0;z-index:0;pointer-events:none;background-size:cover;background-position:center center;background-repeat:no-repeat;background-image:url(\\""+BG+"\\")";'
+    + 'document.body.insertBefore(lay,document.body.firstChild);}'
+    + 'document.documentElement.style.backgroundColor="transparent";'
+    + 'document.body.style.backgroundColor="transparent";'
+    + 'var root=document.getElementById("root");'
+    + 'if(root){root.style.position="relative";root.style.zIndex="1";root.style.backgroundColor="transparent";}'
+    // 面积阈值放到 6%：10% 的卡片（hz8-rW_card）也要透出来，整页才是同一张底。
+    // 只认「计算值是不透明 rgb()」的容器 —— 已经改成 rgba 的会被跳过，所以反复扫是幂等的。
+    // ⚠️ 半透明会层叠复利：frame(.74) > tabHost(.74) > root(.74) 合成 98% 就看不见图了。
+    //    所以先收集命中的容器、数出互相嵌套的层数，最外层给 A、里面每层给 0.16，合成约 0.73。
+    + 'function paint(){var vw=innerWidth,vh=innerHeight,hits=[];'
+    + 'var els=document.querySelectorAll("div,section,aside,main,header,nav,footer,article");'
+    + 'for(var i=0;i<els.length;i++){var el=els[i];var r=el.getBoundingClientRect();'
+    + 'if(r.width<vw*0.06||r.height<vh*0.06)continue;'
+    + 'if(!/^rgb\\((\\d+), (\\d+), (\\d+)\\)$/.test(getComputedStyle(el).backgroundColor))continue;'
+    + 'hits.push(el);}'
+    + 'var n=0;'
+    + 'for(var j=0;j<hits.length;j++){var e=hits[j],d=0,p=e.parentElement;'
+    + 'while(p){if(hits.indexOf(p)>=0)d++;p=p.parentElement;}'
+    + 'var m=/^rgb\\((\\d+), (\\d+), (\\d+)\\)$/.exec(getComputedStyle(e).backgroundColor);'
+    + 'if(!m)continue;'
+    + 'var a=(d===0)?A:0.16;'
+    + 'e.style.setProperty("background-color","rgba("+m[1]+","+m[2]+","+m[3]+","+a+")","important");n++;}'
+    + 'return n;}'
+    + 'window.__wbSkinPaint=paint;'
+    + 'paint();'
+    // dsh 是 React：块是陆续渲染出来的（_tabHost 这种面板级容器比 frame 晚好几拍），
+    // 所以挂个只看「新增节点」的观察器持续补色。不监听属性，避免自己改样式把自己叫醒空转。
+    + 'if(!window.__wbSkinObs){var t=null;'
+    + 'window.__wbSkinObs=new MutationObserver(function(){if(t)return;t=setTimeout(function(){t=null;paint();},400);});'
+    + 'try{window.__wbSkinObs.observe(document.body,{childList:true,subtree:true});}catch(e){}'
+    + 'setTimeout(function(){try{window.__wbSkinObs.disconnect();}catch(e){}},60000);}'
+    + 'return paint();'
+    + '})()';
+}
+function injectSkinIntoHarness(force) {
+  const wv = webview;
+  if (!wv || typeof wv.executeJavaScript !== 'function') return;
+  const api = (window.app && window.app.skins && window.app.skins.bgDataUrl) ? window.app.skins.bgDataUrl : null;
+  if (!api) return;
+  const now = Date.now();
+  if (!force && skyInjectBusy) return;
+  if (!force && now - skyInjectAt < 3000) return;    // 别在 SPA 反复导航时刷爆 IPC
+  skyInjectBusy = true;
+  skyInjectAt = now;
+  const skin = extSkinOf(currentSkin());
+  const target = USER_BG ? '_user' : (skin ? skin.id : '');
+  if (!target) { skyInjectBusy = false; return; }
+  Promise.resolve(api(target, 1920)).then((d) => {
+    if (!d || !d.ok || !d.url) return null;
+    // 图越亮，底板要越实，否则浅色文字压不住（和主界面 panelA 同一套判断）。
+    // 注意这里给的是「最外层」的 alpha，里面每层另算 0.16，合成后大约 0.73。
+    const lum = Number((window.__skinPalette || {}).lum);
+    const L = Number.isFinite(lum) ? lum : 40;
+    const alpha = L > 55 ? 0.62 : (L > 35 ? 0.68 : 0.75);
+    return wv.executeJavaScript(harnessSkinScript(d.url, alpha));
+  }).then((n) => {
+    skyInjectBusy = false;
+    if (n !== null && n !== undefined) setStatus('背景已同步到引擎页面', false);
+  }).catch(() => { skyInjectBusy = false; });
+}
+
 // ---- 从背景图取色（2026-11-25）----
 // 「背景铺满整台 + 卡片颜色配套」的后半句：底色/描边/强调色都从背景图的像素里算，
 // 换任何一张图都自动配色，不用手写 skin.json 的 vars。
@@ -1429,6 +1510,10 @@ async function init() {
       // 文档加载完 ≠ 界面可用：Harness 是 SPA，继续等它渲染出真实 UI 再收起加载页
       setStatus('界面渲染中…', true);
       watchHarnessReady();
+      // 背景图也铺进这个页面（2026-11-25）：SPA 渲染是渐进的，分三拍补，越晚越能把后来才出现的块染色
+      injectSkinIntoHarness(true);
+      setTimeout(() => injectSkinIntoHarness(true), 1500);
+      setTimeout(() => injectSkinIntoHarness(true), 4000);
     });
   });
   // 底部菜单栏：序号徽标显隐开关

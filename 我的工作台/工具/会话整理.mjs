@@ -34,6 +34,7 @@ function flag(name, dflt) {
   return (v === undefined || v.startsWith('--')) ? true : v;
 }
 const ONLY_CWD = typeof flag('cwd', '') === 'string' ? String(flag('cwd', '')) : '';
+const WS_ONLY = typeof flag('ws', '') === 'string' ? String(flag('ws', '')) : '';   // 只归档某个工作区名下的会话
 const KEEP_FRESH = Number(flag('keep', 3)) || 0;
 const AGE_DAYS = Number(flag('age', 0)) || 0;      // >0 时只整理 N 天前的
 const log = (...a) => { if (!JSONOUT) console.log(...a); };
@@ -123,13 +124,29 @@ const rows = items.map((x) => {
 const byFresh = rows.slice().sort((a, b) => b.updatedAt - a.updatedAt);
 const fresh = new Set(byFresh.slice(0, KEEP_FRESH).map((r) => r.bare));
 
-const todo = rows.filter((r) => {
-  if (r.archived || r.running) return false;
-  if (fresh.has(r.bare)) return false;
-  if (!(r.unnamed || r.ungrouped)) return false;
-  if (AGE_DAYS > 0 && r.ageH < AGE_DAYS * 24) return false;
-  return true;
-});
+const todo = (() => {
+  // --ws <标题>：把这个工作区名下的会话全归档。
+  // 治的是「侧栏未分组里挂着一堆明明已经归组的旧会话」——那种会话磁盘口径算已分组，
+  // 但引擎内存里还是未分组（改盘不改内存），只有走 rpc 归档才能让它从侧栏消失。
+  if (WS_ONLY) {
+    const hit = Object.entries(ws.t).find(([, w]) => String(w.title || '') === WS_ONLY);
+    if (!hit) { console.error('没找到工作区：' + WS_ONLY); process.exit(1); }
+    const set = new Set((hit[1].sessionIds || []).map((s) => {
+      const v = String(s);
+      return v.startsWith('session-') ? v : 'session-' + v;   // ⚠️ rpc 只认带前缀的
+    }));
+    return [...set].filter((s) => !ws.archBare.has(bare(s))).map((s) => ({
+      id: s, bare: bare(s), title: WS_ONLY, cwd: String(hit[1].path || ''), why: '工作区 ' + WS_ONLY, ageH: 0,
+    }));
+  }
+  return rows.filter((r) => {
+    if (r.archived || r.running) return false;
+    if (fresh.has(r.bare)) return false;
+    if (!(r.unnamed || r.ungrouped)) return false;
+    if (AGE_DAYS > 0 && r.ageH < AGE_DAYS * 24) return false;
+    return true;
+  });
+})();
 
 const tally = {
   total: rows.length,

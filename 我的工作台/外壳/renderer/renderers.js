@@ -18192,9 +18192,20 @@ renderers.neuron = (body, meta, head) => {
     if (!iw || !ih) return;
     var sc = Math.max(W / iw, H / ih);          // cover：等比铺满，多出来的居中裁掉
     var dw = iw * sc, dh = ih * sc;
+    var a = Math.max(0, Math.min(1, (conf.opacity == null ? 0.62 : Number(conf.opacity) || 0) * 0.72));
+    // 2026-11-25 用户反馈「图和节点的反差太大，神经元看不清」：
+    // 原样铺图 = 一张细节很多的照片在底下，节点那点亮蓝直接淹掉。
+    // 所以画之前先模糊 + 压暗 + 降饱和，只留一层色温氛围，细节交给节点自己。
+    // 模糊会让边缘变透明，所以尺寸放大一圈（pad），免得四周露出一圈发白的边。
+    // 三档（改这三个数就行）：图更清楚 → blur 10 / brightness .8 / ×.8；
+    //                         现在这档 → blur 16 / .68 / ×.72；
+    //                         节点优先 → blur 28 / .5 / ×.55
+    var pad = 64;
+    var k = (Math.max(W, H) + pad * 2) / Math.max(W, H);
     ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, (conf.opacity == null ? 0.62 : Number(conf.opacity) || 0) * 0.72));
-    ctx.drawImage(bgImg, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    try { ctx.filter = 'blur(16px) saturate(.78) brightness(.68)'; } catch (e) { /* 老内核不认 filter 就按原样画 */ }
+    ctx.globalAlpha = a;
+    ctx.drawImage(bgImg, (W - dw * k) / 2, (H - dh * k) / 2, dw * k, dh * k);
     ctx.restore();
   }
   function drawInner(ctx) {
@@ -18222,7 +18233,7 @@ renderers.neuron = (body, meta, head) => {
     paintBgImage(ctx);
     // 背景：中心微光
     var bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.62);
-    bg.addColorStop(0, softBg ? 'rgba(30,54,96,.14)' : 'rgba(30,54,96,.55)');
+    bg.addColorStop(0, softBg ? 'rgba(30,54,96,.07)' : 'rgba(30,54,96,.55)');
     bg.addColorStop(1, 'rgba(6,9,16,0)');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
@@ -18241,7 +18252,7 @@ renderers.neuron = (body, meta, head) => {
     // 暗角：把注意力收到中间（有背景图时收薄，不然四角一块死黑把图吃掉了）
     var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.78);
     vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, softBg ? 'rgba(2,4,9,.34)' : 'rgba(2,4,9,.55)');
+    vg.addColorStop(1, softBg ? 'rgba(2,4,9,.44)' : 'rgba(2,4,9,.55)');
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, W, H);
 

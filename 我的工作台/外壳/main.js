@@ -1531,6 +1531,7 @@ function listSkins() {
       order: Number.isFinite(Number(j.order)) ? Number(j.order) : 100,
       css: fs.existsSync(cssFile) ? fileUrl(cssFile) : '',
       background: (bgRaw && fs.existsSync(bgRaw)) ? fileUrl(bgRaw) : '',
+      backgroundFile: (bgRaw && fs.existsSync(bgRaw)) ? bgRaw : '',
       backgroundOpacity: Number.isFinite(Number(j.backgroundOpacity)) ? Math.max(0, Math.min(1, Number(j.backgroundOpacity))) : 0.22,
       icon: (iconRaw && fs.existsSync(iconRaw)) ? iconRaw : '',
       vars: (j.vars && typeof j.vars === 'object') ? j.vars : null,
@@ -1553,7 +1554,126 @@ ipcMain.handle('skins:apply-icon', (e, skinId) => {
   try { w.setIcon(want); } catch (err) { return { ok: false, err: String(err.message || err) }; }
   return { ok: true, icon: want };
 });
-// ---- 自定义背景图（用户自己上传，2026-11-25）----
+// ---- 从背景图自动取色（2026-11-25）----
+// 「背景直接铺满整个工作台，卡片配色跟着这张图走」—— 卡片底色/描边/强调色都从图里算，
+// 换任何一张图都自动配套，不用手写 skin.json 的 vars。
+// 用主进程 nativeImage 缩到 32×32 再读位图：不碰 canvas，也就没有 file:// 污染的问题。
+const PALETTE_SIZE = 32;
+const paletteCache = new Map();   // absPath -> {mtimeMs,size,palette}
+function rgb2hex(r, g, b) { return '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
+function mix(a, b, t) { return a.map((v, i) => v * (1 - t) + b[i] * t); }
+// rgb ↔ hsl：把主色"提成强调色"用（保色相、推饱和、抬亮度），避免直接拿米灰当高亮色。
+function rgbToHsl(c) {
+  const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (mx + mn) / 2;
+  const d = mx - mn;
+  if (d) {
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, s, l];
+}
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  const f = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  if (!s) return [l * 255, l * 255, l * 255];
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [f(p, q, h + 1 / 3) * 255, f(p, q, h) * 255, f(p, q, h - 1 / 3) * 255];
+}
+// 主色 → 强调色：色相不动；饱和度至少 0.26（太灰看不见）；亮度落在 0.66~0.76（深底浅底都能当高亮）
+function boostAccent(base) {
+  const hsl = rgbToHsl(base);
+  const h = hsl[0];
+  let s = hsl[1];
+  let l = hsl[2];
+  s = Math.min(0.46, Math.max(0.26, s * 1.8));
+  l = Math.min(0.76, Math.max(0.66, l > 0.6 ? l - 0.02 : l + 0.16));
+  return hslToRgb(h, s, l);
+}
+function paletteOfImage(absPath) {
+  if (!absPath || !fs.existsSync(absPath)) return null;
+  let mtimeMs = 0, size = 0;
+  try { const st = fs.statSync(absPath); mtimeMs = st.mtimeMs; size = st.size; } catch (e) { return null; }
+  const ck = absPath;
+  const hit = paletteCache.get(ck);
+  if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return hit.palette;
+  let img = null;
+  try { img = nativeImage.createFromPath(absPath); } catch (e) { return null; }
+  if (!img || img.isEmpty()) return null;
+  const sz = img.getSize();
+  if (!sz.width || !sz.height) return null;
+  const scale = Math.min(PALETTE_SIZE / sz.width, PALETTE_SIZE / sz.height, 1);
+  const small = scale < 1 ? img.resize({ width: Math.max(1, Math.round(sz.width * scale)), height: Math.max(1, Math.round(sz.height * scale)), quality: 'good' }) : img;
+  const bmp = small.toBitmap();   // BGRA
+  const n = Math.floor(bmp.length / 4);
+  if (!n) return null;
+  let sr = 0, sg = 0, sb = 0, cnt = 0;
+  // 主色：把颜色量化到 4 位/通道的桶里投票，再按「饱和度 × 出现次数」挑代表色。
+  const buckets = new Map();
+  for (let i = 0; i < n; i++) {
+    const b = bmp[i * 4], g = bmp[i * 4 + 1], r = bmp[i * 4 + 2], a = bmp[i * 4 + 3];
+    if (a < 24) continue;
+    sr += r; sg += g; sb += b; cnt++;
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const cur = buckets.get(key) || { r: 0, g: 0, b: 0, c: 0 };
+    cur.r += r; cur.g += g; cur.b += b; cur.c++;
+    buckets.set(key, cur);
+  }
+  if (!cnt) return null;
+  const avg = [sr / cnt, sg / cnt, sb / cnt];
+  // 强调色：先用「出现最多的色桶」当主色 —— 这样暖图给暖色、冷图给冷色，才叫"配套"。
+  // 早先版本挑"最饱和的桶"，一张暖灰风景里只要有一小块蓝天，强调色就跳成冷蓝，和整台打架。
+  let mainBucket = null, mainCount = -1;
+  buckets.forEach((v) => {
+    const r = v.r / v.c, g = v.g / v.c, b = v.b / v.c;
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    if (lum < 0.06 || lum > 0.96) return;          // 纯黑/纯白边角不算主色
+    if (v.c > mainCount) { mainCount = v.c; mainBucket = [r, g, b]; }
+  });
+  const accentBase = mainBucket || avg;
+  // 主色常常偏灰（比如 186,170,168 这种米灰），直接拿来当强调色会看不见 ——
+  // 保留色相、把饱和度和亮度推到能当高亮用的位置，颜色关系不乱。
+  const accent = boostAccent(accentBase);
+  const base = avg.slice();
+  const palette = {
+    avg: avg.map(Math.round),
+    accent: rgb2hex(accent[0], accent[1], accent[2]),
+    accentRaw: rgb2hex(accentBase[0], accentBase[1], accentBase[2]),
+    dark: rgb2hex(...mix(base, [0, 0, 0], 0.86)),      // 页面底色：平均色压到极暗
+    panel: rgb2hex(...mix(base, [0, 0, 0], 0.5)),      // 卡片基色
+    light: rgb2hex(...mix(base, [255, 255, 255], 0.55)),
+    lum: Math.round((0.2126 * avg[0] + 0.7152 * avg[1] + 0.0722 * avg[2]) / 2.55),
+    size: { w: sz.width, h: sz.height },
+  };
+  paletteCache.set(ck, { mtimeMs, size, palette });
+  return palette;
+}
+ipcMain.handle('skins:palette', (e, skinId) => {
+  const sid = String(skinId || '');
+  let file = '';
+  if (sid === '_user') { const ub = readUserBg(); file = ub ? ub.file : ''; }
+  else {
+    const sk = listSkins().find((s) => s.id === sid);
+    if (sk && sk.backgroundFile) file = sk.backgroundFile;
+  }
+  const p = paletteOfImage(file);
+  return p ? Object.assign({ ok: true, file }, p) : { ok: false, err: '这张图读不出颜色（可能不是位图或已损坏）', file };
+});
+
 // 存放：外壳\skins\_user\bg.<ext>；配置：外壳\skins\_user\bg.json（{file,name,opacity,updatedAt}）
 // `_` 前缀 ⇒ listSkins() 会跳过，不会被当成一套皮肤；皮肤和它互不覆盖：用户背景图优先级更高。
 const USER_SKIN_DIR = path.join(SKINS_DIR, '_user');

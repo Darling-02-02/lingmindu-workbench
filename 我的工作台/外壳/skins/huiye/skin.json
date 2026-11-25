@@ -3,21 +3,21 @@
   "name": "灰夜",
   "nameEn": "Grey Night",
   "author": "Darling",
-  "tagline": "整张图直接当工作台背景（来自 D:\\AAAlingmindu_workbench\\topic\\huiye.jpg）",
+  "tagline": "整张图直接铺满整个工作台当底，卡片做磨砂半透明，颜色跟着这张图自动配（来自 D:\\AAAlingmindu_workbench\\topic\\huiye.jpg）",
   "accent": "#8fa6bf",
   "bodyAttr": "data-dsh-huiye",
   "order": 20,
   "background": "bg.jpg",
-  "backgroundOpacity": 0.62,
+  "backgroundOpacity": 1,
   "desktopIcon": "",
   "vars": {
-    "--bg": "#0b0e13",
-    "--bg-panel": "rgba(16,19,26,.72)",
-    "--bg-panel-hover": "rgba(22,26,35,.82)",
-    "--border": "#2a303c",
-    "--text": "#e6eaf1",
-    "--text-dim": "#98a2b3",
+    "--bg": "#0a0d12",
+    "--bg-panel": "rgba(10,13,19,.42)",
+    "--bg-panel-hover": "rgba(18,23,31,.62)",
+    "--border": "rgba(180,196,214,.16)",
+    "--text": "#e8ecf3",
+    "--text-dim": "#a3adbd",
     "--accent": "#8fa6bf",
-    "--accent-soft": "rgba(143,166,191,.18)"
+    "--accent-soft": "rgba(143,166,191,.16)"
   }
 }

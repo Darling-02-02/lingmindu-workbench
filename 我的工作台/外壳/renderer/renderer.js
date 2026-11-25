@@ -827,6 +827,7 @@ function refreshBgLayer(sk) {
 function applyUserBg(bg) {
   USER_BG = (bg && bg.url) ? { url: bg.url, name: bg.name || '', opacity: Number(bg.opacity) || 0.55 } : null;
   refreshBgLayer(extSkinOf(currentSkin()));
+  applySkinPalette(extSkinOf(currentSkin()));   // 换了图就重新取一次色，卡片配色跟着走
 }
 // 把「外部皮肤」落到页面：清掉上一个的 bodyAttr / link / 背景 / 变量，再挂新的。
 // 内置 5 套配色不走这里（它们在 skins.css 里，靠 html[data-skin]）。
@@ -855,7 +856,9 @@ function applyExtSkin(sk) {
     window.__skinVarKeys = Object.keys(sk.vars);
     window.__skinVarKeys.forEach((k) => rootStyle.setProperty(k, String(sk.vars[k])));
   }
-  // 5) 窗口/任务栏图标（皮肤带 desktopIcon 才换；切回内置就还原）
+  // 5) 从背景图取色（2026-11-25）——「卡片配色跟着这张图走」
+  applySkinPalette(sk);
+  // 6) 窗口/任务栏图标（皮肤带 desktopIcon 才换；切回内置就还原）
   try {
     if (window.app && window.app.skins && window.app.skins.applyIcon) window.app.skins.applyIcon(sk ? sk.id : '');
   } catch (e) { /* 图标换不了不影响主题 */ }
@@ -864,6 +867,69 @@ function applySkin(k) {
   const ext = extSkinOf(k);
   document.documentElement.dataset.skin = ext ? 'ext' : (k || 'aurora');
   applyExtSkin(ext);
+}
+// ---- 从背景图取色（2026-11-25）----
+// 「背景铺满整台 + 卡片颜色配套」的后半句：底色/描边/强调色都从背景图的像素里算，
+// 换任何一张图都自动配色，不用手写 skin.json 的 vars。
+// 采样在主进程做（nativeImage.resize().toBitmap()），渲染进程碰不到 canvas，
+// 也就没有 file:// 图片把 canvas 污染成「读不出像素」的老问题。
+let paletteSeq = 0;
+function hexToRgb(h) {
+  const s = String(h || '').replace('#', '');
+  const v = parseInt(s.length === 3 ? s.replace(/(.)/g, '$1$1') : s, 16);
+  return Number.isFinite(v) ? [(v >> 16) & 255, (v >> 8) & 255, v & 255] : [128, 140, 160];
+}
+function rgba(h, a) {
+  const c = hexToRgb(h);
+  return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')';
+}
+function tint(h, t) {   // 往白色混 t（0~1），用来把底色/描边提亮到合适位置
+  const c = hexToRgb(h);
+  return '#' + c.map((v) => Math.round(v + (255 - v) * t).toString(16).padStart(2, '0')).join('');
+}
+function clearSkinPaletteVars() {
+  const keys = window.__skinPaletteKeys;
+  if (!keys || !keys.length) return;
+  const st = document.documentElement.style;
+  keys.forEach((k) => st.removeProperty(k));
+  window.__skinPaletteKeys = [];
+}
+function applySkinPalette(sk) {
+  const api = (window.app && window.app.skins && window.app.skins.palette) ? window.app.skins.palette : null;
+  if (!api) return;
+  const target = USER_BG ? '_user' : (sk ? sk.id : '');
+  const seq = ++paletteSeq;
+  Promise.resolve(api(target)).then((p) => {
+    if (seq !== paletteSeq) return;          // 这期间又切了皮肤，丢掉过期结果
+    if (!p || !p.ok || !p.panel) { clearSkinPaletteVars(); return; }
+    const dark = p.dark || '#0a0d12';
+    const acc = p.accent || '#8fa6bf';
+    // 卡片是「深色玻璃」不是「图的平均色」：
+    //   图越亮，压深的那层就越实（否则 0.59 的灰盖在 186 亮度的图上，变成中灰 + 白字，字全糊）；
+    //   图越暗，就可以透得更狠，露出更多画面。
+    const lum = Number(p.lum);
+    const L = Number.isFinite(lum) ? lum : 40;
+    const panelA = L > 55 ? 0.74 : (L > 35 ? 0.66 : 0.52);
+    // 文字也跟着图走色温：暖图给暖白、冷图给冷白，不然一张暖调风景上贴冷白字，整台发金鱼眼。
+    const warm = hexToRgb(dark)[0] > hexToRgb(dark)[2];
+    const vars = {
+      '--bg': dark,
+      '--bg-panel': rgba(dark, panelA.toFixed(2)),
+      '--bg-panel-hover': rgba(dark, Math.min(0.92, panelA + 0.14).toFixed(2)),
+      '--border': rgba(tint(acc, 0.35), '0.20'),
+      '--accent': acc,
+      '--accent-soft': rgba(acc, '0.16'),
+      '--ring': rgba(acc, '0.45'),
+      '--tech-line': rgba(tint(acc, 0.3), '0.16'),
+      '--text': warm ? '#f2ede6' : '#e8ecf3',
+      '--text-dim': warm ? 'rgba(226,215,203,.72)' : 'rgba(163,173,189,.76)',
+    };
+    const st = document.documentElement.style;
+    clearSkinPaletteVars();
+    window.__skinPaletteKeys = Object.keys(vars);
+    window.__skinPaletteKeys.forEach((k) => st.setProperty(k, String(vars[k])));
+    window.__skinPalette = p;
+  }).catch(() => { /* 取色失败就退回 skin.json 里写死的兜底色 */ });
 }
 function currentThemeMode() {
   const v = localStorage.getItem(THEME_KEY);

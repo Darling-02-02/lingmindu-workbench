@@ -1,0 +1,65 @@
+/* ============================================================================
+   灰夜（huiye）—— 一张图当整个工作台的底
+   ---------------------------------------------------------------------------
+   目标：背景图不是「在页面后面露一点」，而是**整台可见**；卡片、顶栏、标签栏都做
+        磨砂半透明，让图从它们身上透出来，而不是被一块不透明的深色板整片盖住。
+
+   要透三层：
+     1) html 的底色  —— 皮肤自己给了 --bg（不透明），靠 .skin-bg-layer 的图盖在上面不行，
+                        .skin-bg-layer 是 z-index:-1，压在 html 背景色之下 ⇒ 必须让 html 底
+                        色在图之外的地方才看得见：图不透明（backgroundOpacity:1）所以能盖住。
+     2) body         —— skins.css 里 html[data-skin-bg="1"] body{background:transparent} 已处理。
+     3) .panel/.pane —— 这里是关键：styles.css 给的是 `linear-gradient(...), var(--bg-panel)`，
+                        把 --bg-panel 调到 42% 不透明，再加 backdrop-filter 磨砂，图就透出来了。
+                        同时把面板上那层蓝色渐变抹平（否则整台发蓝，和图的灰调打架）。
+
+   --bg-panel 的色值会在运行时被「从背景图取色」的结果覆盖（main.js 的 skins:palette），
+   所以这里只写兜底的灰蓝，别写死成某个具体图的颜色。
+   ========================================================================== */
+
+body[data-dsh-huiye] .panel,
+body[data-dsh-huiye] .pane {
+  /* 只留纯色底，去掉 styles.css 里那层 rgba(122,178,255,.055) 的蓝色渐变 */
+  background: var(--bg-panel);
+  backdrop-filter: blur(16px) saturate(1.08);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
+  border-color: var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 10px 30px rgba(0, 0, 0, .28);
+}
+
+/* 面板顶栏：再透一档，读起来轻一点 */
+body[data-dsh-huiye] .panel-head {
+  background: color-mix(in srgb, var(--bg-panel) 55%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* 顶栏 / 场景标签栏 / 状态条：styles.css 用 !important 压了不透明底，这里必须也带 !important 才盖得住 */
+body[data-dsh-huiye] #scenebar,
+body[data-dsh-huiye] #topbar-status,
+body[data-dsh-huiye] .titlebar {
+  background: color-mix(in srgb, var(--bg-panel) 76%, transparent) !important;
+  /* styles.css 里 #scenebar 那几条是 `backdrop-filter: none !important`（早期为了省性能），
+     所以这里也得 !important，否则磨砂根本不生效。 */
+  backdrop-filter: blur(20px) saturate(1.1) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(1.1) !important;
+  border-color: var(--border);
+}
+
+/* 卡片之间的缝（工作区网格）也是 body 的一部分，别让它自己刷一层深色 */
+body[data-dsh-huiye] #grid {
+  background: transparent;
+}
+
+/* 滚动条跟着图的灰调走，不要那条硬编码的蓝 */
+body[data-dsh-huiye] #grid::-webkit-scrollbar-thumb,
+body[data-dsh-huiye] .panel-body::-webkit-scrollbar-thumb {
+  background: rgba(180, 196, 214, .20);
+}
+
+/* 遮罩/浮层（指令面板、卡片主题菜单、会话浮层）—— 半透明磨砂，不要一块死黑 */
+body[data-dsh-huiye] .kflow {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(1.05);
+  -webkit-backdrop-filter: blur(18px) saturate(1.05);
+}

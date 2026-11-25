@@ -17770,7 +17770,7 @@ renderers.neuron = (body, meta, head) => {
           text: pList.length
             ? pList.map(function (it) { return ((it.time || '--') + '  ' + it.title).trim(); }).join('\n')
             : '今天没有排到计划\n（想看/想改：node 工具\\每日计划.mjs）',
-          size: pList.length,
+          size: 0,   // 别拿"项数"当字节数（详情里会显示成"约 1 字节"）；项数在 label 里
           planInfo: { day: pKey, total: pList.length, done: pDone, items: pList }
         });
         edges.push({ a: 'core', b: 'plan', kind: 'memory' });

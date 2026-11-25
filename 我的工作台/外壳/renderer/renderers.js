@@ -7383,6 +7383,37 @@ function startBiliProbe(wv, meta) {
   paint();
 })();
 
+// 注入到 guest 里的抽取脚本（2026-11-25）：返回 JSON 字符串 —— executeJavaScript 的返回值必须可序列化。
+// 只读 DOM，不改页面；正文优先取 main/[role=main]/article/#app/#root，抽不到再退到 body。
+const CAPTURE_JS = [
+  '(function () {',
+  '  function clean(s) { return String(s == null ? "" : s).replace(/[ \\t]+/g, " ").trim(); }',
+  '  var out = { title: document.title || "", url: location.href || "", at: Date.now(), text: "", tables: [], links: [], stats: {} };',
+  '  var root = document.querySelector("main, [role=main], article, #app, #root") || document.body;',
+  '  var t = String((root && root.innerText) || "").replace(/\\n{3,}/g, "\\n\\n").trim();',
+  '  if (t.length > 20000) t = t.slice(0, 20000) + "\\n…（超长截断）";',
+  '  out.text = t;',
+  '  var tbs = document.querySelectorAll("table");',
+  '  for (var i = 0; i < tbs.length && i < 6; i++) {',
+  '    var rows = [], trs = tbs[i].querySelectorAll("tr");',
+  '    for (var j = 0; j < trs.length && j < 30; j++) {',
+  '      var cells = [], tds = trs[j].children;',
+  '      for (var k = 0; k < tds.length; k++) cells.push(clean(tds[k].innerText).slice(0, 120));',
+  '      if (cells.length) rows.push(cells);',
+  '    }',
+  '    if (rows.length > 1) out.tables.push(rows);',
+  '  }',
+  '  var as = document.querySelectorAll("a[href]");',
+  '  for (var n = 0; n < as.length && n < 80; n++) {',
+  '    var h = as[n].getAttribute("href") || "";',
+  '    if (!h || h.charAt(0) === "#") continue;',
+  '    out.links.push({ text: clean(as[n].innerText).slice(0, 60), href: h.slice(0, 300) });',
+  '  }',
+  '  out.stats = { chars: t.length, nodes: document.querySelectorAll("*").length, links: out.links.length, tables: out.tables.length };',
+  '  return JSON.stringify(out);',
+  '})()',
+].join('\n');
+
 renderers.embed = (body, meta, head) => {  body.classList.add('embed-panel');
   const url = String(meta.url || '');
   const A = window.app && window.app.app;   // app = 宿主通用能力（开外链/定位路径），不占任何场景命名空间
@@ -7606,6 +7637,46 @@ renderers.embed = (body, meta, head) => {  body.classList.add('embed-panel');
       try { wv.reload(); } catch (e) { /* ignore */ }
     });
     acts.appendChild(reloadBtn);
+    // 2026-11-25：抓取当前页 —— 闲鱼/小红书/抖音/X 这些后台的数据只长在网页里，AI 看不到。
+    // 注进 guest 里抽标题/正文/表格/链接，回主进程落两份（原始 json + 记忆 md），AI 就能读到。
+    // 抓完在面板中间闪一行字告知落在哪，不弹窗、不打断。
+    const capBtn = makeBtn('📋 抓这一页', '把当前页的标题/正文/表格/链接抽成结构化文本，写进记忆（dsh 里的 AI 读得到）');
+    const flash = (t, ms) => {
+      showMsg(t);
+      setTimeout(() => { if (!disposed) hideMsg(); }, ms || 4200);
+    };
+    capBtn.addEventListener('click', () => {
+      if (!wv) { flash('先点「🔗 内置」把网页挂上，再抓。'); return; }
+      const C = window.app && window.app.capture;
+      if (!C || !C.save) { flash('这个壳没有 capture 通道（主进程改完要重启壳）。'); return; }
+      capBtn.disabled = true;
+      const old = capBtn.textContent;
+      capBtn.textContent = '⏳ 抓取中';
+      Promise.resolve()
+        .then(() => wv.executeJavaScript(CAPTURE_JS, true))
+        .then((raw) => {
+          let data = null;
+          try { data = JSON.parse(String(raw || '')); } catch (e) { data = null; }
+          if (!data || typeof data !== 'object') throw new Error('页面没返回可解析的数据（可能还在加载）');
+          return C.save(pid, meta.title || pid, data);
+        })
+        .then((r) => {
+          capBtn.disabled = false;
+          capBtn.textContent = old;
+          if (r && r.ok) {
+            flash('已抓 ' + (r.chars || 0) + ' 字 · 表 ' + (r.tables || 0) + ' 个 · 链接 ' + (r.links || 0)
+              + ' 条 → 记忆\\平台数据\\' + (meta.title || pid) + '.md', 6000);
+          } else {
+            flash('没抓成：' + ((r && r.err) || '未知'));
+          }
+        })
+        .catch((err) => {
+          capBtn.disabled = false;
+          capBtn.textContent = old;
+          flash('抓取失败：' + ((err && err.message) || err));
+        });
+    });
+    acts.appendChild(capBtn);
     const openBtn = makeBtn('🌐 浏览器打开', '在系统浏览器打开（要放大、要登录时用）');
     openBtn.addEventListener('click', () => {
       if (A && A.openPath) A.openPath(url);
@@ -17619,6 +17690,25 @@ renderers.neuron = (body, meta, head) => {
         }));
       });
 
+      // 平台数据节点（2026-11-26）：网页面板「📋 抓这一页」抓下来的 md，一家后台一个节点。
+      // 走主进程 capture:list 拿清单（渲染层没能力列目录），再逐个读正文 ⇒ 点开就能看内容。
+      var CAP = (window.app && window.app.capture) || null;
+      if (CAP && CAP.list) {
+        jobs.push(Promise.resolve(CAP.list()).then(function (r) {
+          var list = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+          return Promise.all(list.slice(0, 8).map(function (it, i) {
+            return readText(it.file).then(function (txt) {
+              var id = 'doc-plat-' + i;
+              nodes.push({
+                id: id, label: it.name, kind: 'doc', group: 'doc', path: it.file,
+                size: it.size || 0, r: 7, text: txt || ''
+              });
+              edges.push({ a: 'core', b: id, kind: 'doc' });
+            });
+          }));
+        }).catch(function () { /* 清单读不到就不画这几个点，别影响整张图 */ }));
+      }
+
       // 场景区域节点（球壳 1）+ 依赖边
       areas.forEach(function (a, i) {
         var id = 'area-' + a.owner;
@@ -17983,7 +18073,7 @@ renderers.neuron = (body, meta, head) => {
     var mems = nodes.filter(function (n) { return n.kind === 'memory'; });
     var srcs = nodes.filter(function (n) { return n.kind === 'source'; });
     var chains = nodes.filter(function (n) { return n.kind === 'chain'; });
-    var R1 = 430, R2 = 700, R0 = 150;
+    var R1 = 430, R2 = 700, R0 = 300;   // R0 是共享文档那一圈（2026-11-26：150 → 300，原来太挤，5 个点挤在中心 60px 里点不中）
     areas.forEach(function (n, i) {
       var t = (i / Math.max(1, areas.length)) * Math.PI * 2;
       var ring = (i % 2 === 0) ? 1 : 0.86;                 // 错开两层，看起来像神经元簇
@@ -18046,8 +18136,16 @@ renderers.neuron = (body, meta, head) => {
       n.r = 5.4;
     });
     docs.forEach(function (n, i) {
-      var t = [0, 2.1, 4.2][i % 3];
-      n.x = Math.cos(t) * R0; n.y = Math.sin(t) * 30; n.z = Math.sin(t) * R0; n.r = 8;
+      // 2026-11-26 修「文档节点永远点不中」：以前 t 取 [0, 2.1, 4.2][i % 3]，
+      //   只有三个角度 ⇒ 第 4、5 个文档节点直接压在第 1、2 个上面（冲突 压住 关于使用者、
+      //   闲鱼 压住 待办），投影后半径才 2px，鼠标怎么点都点到下面那个。
+      //   现在按 i / 总数 均分一圈，加进来的平台数据节点也自动占一个位置。
+      var t = -Math.PI * 0.5 + (i / Math.max(1, docs.length)) * Math.PI * 2;
+      n.x = Math.cos(t) * R0;
+      // 上下交错：5 个点挤在同一个水平面上时，投影后只是横向一点缝隙，标签还会互相压
+      n.y = (i % 2 ? 1 : -1) * (24 + Math.floor(i / 2) * 26);
+      n.z = Math.sin(t) * R0;
+      n.r = 10;   // 8 → 10：投影后约 3px（命中半径另有 +6 的兜底，见 pick()）
     });
 
     // 工作区（2026-11-25）：最外一圈球壳，每个工作区独占一个扇区；会话贴着它的工作区散开成一小簇。
@@ -18249,6 +18347,15 @@ renderers.neuron = (body, meta, head) => {
         if (dp.x < -24 || dp.x > W + 24 || dp.y < -24 || dp.y > H + 24) dbg.out++;
       }
       window.__neuronDbgInfo = dbg;
+      // 顺带把每个节点的屏幕坐标也记一份：调试"点哪儿能点中某个节点"用（同样只在 __neuronDbg 开启时算）
+      window.__neuronDbgNodes = nodes.map(function (n) {
+        var p = project(n);
+        return {
+          id: n.id, label: n.label, kind: n.kind, group: n.group,
+          x: Math.round(p.x), y: Math.round(p.y), r: Math.round(n.r * p.s),
+          hasText: !!(n.text && String(n.text).trim())
+        };
+      });
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);

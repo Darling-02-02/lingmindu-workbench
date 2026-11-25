@@ -2331,6 +2331,119 @@ ipcMain.handle('rag:save', (e, patch) => ragSave(patch));
 ipcMain.handle('rag:health', () => ragHealth());
 ipcMain.handle('rag:query', (e, q, opt) => ragQuery(q, opt));
 
+// ---- 平台发布前抓取（2026-11-25）：把网页面板"当前这一页"抽成结构化文本 ----
+// 为什么要有：闲鱼/小红书/抖音/X 这一类后台，数据只长在网页里，AI 看不到。
+// 抓一次 = 一份原始 json（外壳\data\captures）+ 一份 md（记忆目录下 平台数据\<平台>.md），
+// md 覆盖写，所以 dsh 里的 AI 每次读到的都是"最新一次抓的"，不会越滚越大。
+// 抽取脚本在渲染侧注入 guest（renderers.js 的 CAPTURE_JS），主进程只负责落盘。
+const CAPTURE_DIR = path.join(__dirname, 'data', 'captures');
+const PLATFORM_MD_DIR = () => path.join(DSH_DATA_DIR, '场景记忆', '_共享记忆', '平台数据');
+
+function safeName(s, fallback) {
+  const t = String(s == null ? '' : s).replace(/[\\/:*?"<>|\r\n\t]+/g, '-').replace(/\s+/g, ' ').trim();
+  return (t || fallback || '未命名').slice(0, 60);
+}
+
+function stampNow() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+function captureMarkdown(panelTitle, data) {
+  const L = [];
+  const t = String(panelTitle || data.title || '平台页面');
+  L.push('# ' + t);
+  L.push('');
+  L.push('- 抓取时间：' + new Date(Number(data.at) || Date.now()).toLocaleString('zh-CN'));
+  L.push('- 页面地址：' + String(data.url || ''));
+  L.push('- 页面标题：' + String(data.title || ''));
+  const st = data.stats || {};
+  L.push('- 规模：正文 ' + (st.chars || 0) + ' 字 · 链接 ' + (st.links || 0) + ' 条 · 表格 ' + (st.tables || 0) + ' 个 · DOM ' + (st.nodes || 0) + ' 个节点');
+  L.push('');
+  L.push('## 正文');
+  L.push('');
+  L.push('```text');
+  L.push(String(data.text || '（这一页没抽到正文：可能是登录页、空白页，或者还在加载）').slice(0, 12000));
+  L.push('```');
+  const tables = Array.isArray(data.tables) ? data.tables : [];
+  if (tables.length) {
+    L.push('');
+    L.push('## 表格');
+    tables.slice(0, 6).forEach((rows, i) => {
+      L.push('');
+      L.push('### 表 ' + (i + 1));
+      L.push('');
+      const width = Math.max.apply(null, rows.map((r) => (Array.isArray(r) ? r.length : 0)).concat([1]));
+      const cell = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 80);
+      L.push('| ' + Array.from({ length: width }, (_, c) => (rows[0] && rows[0][c] != null ? cell(rows[0][c]) : '列' + (c + 1))).join(' | ') + ' |');
+      L.push('| ' + Array.from({ length: width }, () => '---').join(' | ') + ' |');
+      rows.slice(1, 31).forEach((r) => {
+        L.push('| ' + Array.from({ length: width }, (_, c) => cell(r && r[c])).join(' | ') + ' |');
+      });
+    });
+  }
+  const links = Array.isArray(data.links) ? data.links : [];
+  if (links.length) {
+    L.push('');
+    L.push('## 页面上的链接（前 ' + Math.min(links.length, 40) + ' 条）');
+    L.push('');
+    links.slice(0, 40).forEach((l) => {
+      L.push('- ' + (String(l.text || '').trim() || '(无文字)') + ' → ' + String(l.href || ''));
+    });
+  }
+  L.push('');
+  L.push('> 这份 md 每次抓取都会整份覆盖，只保留最新一次。原始 json 在 `外壳\\data\\captures\\`。');
+  return L.join('\n') + '\n';
+}
+
+ipcMain.handle('capture:save', (e, panelId, panelTitle, data) => {
+  try {
+    const d = (data && typeof data === 'object') ? data : {};
+    const pid = safeName(panelId, 'panel');
+    const title = safeName(panelTitle || d.title, pid);
+    fs.mkdirSync(CAPTURE_DIR, { recursive: true });
+    const rawFile = path.join(CAPTURE_DIR, pid + '-' + stampNow() + '.json');
+    fs.writeFileSync(rawFile, JSON.stringify(d, null, 2), 'utf8');
+    const mdDir = PLATFORM_MD_DIR();
+    fs.mkdirSync(mdDir, { recursive: true });
+    const mdFile = path.join(mdDir, title + '.md');
+    const md = captureMarkdown(panelTitle, d);
+    fs.writeFileSync(mdFile, md, 'utf8');
+    return {
+      ok: true,
+      raw: rawFile,
+      md: mdFile,
+      chars: String(d.text || '').length,
+      links: (Array.isArray(d.links) ? d.links.length : 0),
+      tables: (Array.isArray(d.tables) ? d.tables.length : 0),
+    };
+  } catch (err) {
+    return { ok: false, err: String((err && err.message) || err) };
+  }
+});
+
+// 已抓过哪些平台（面板标题 → md 文件、时间、字数），给面板上显示"上次抓的时间"
+ipcMain.handle('capture:list', () => {
+  try {
+    const dir = PLATFORM_MD_DIR();
+    if (!fs.existsSync(dir)) return { ok: true, items: [], dir: dir };
+    const items = [];
+    fs.readdirSync(dir).forEach((f) => {
+      if (!/\.md$/i.test(f)) return;
+      const abs = path.join(dir, f);
+      try {
+        const st = fs.statSync(abs);
+        items.push({ name: f.replace(/\.md$/i, ''), file: abs, size: st.size, mtime: st.mtimeMs });
+      } catch (err) { /* 单个文件读不了就跳过 */ }
+    });
+    items.sort((a, b) => b.mtime - a.mtime);
+    return { ok: true, items: items, dir: dir };
+  } catch (err) {
+    return { ok: false, err: String((err && err.message) || err), items: [] };
+  }
+});
+
 // ---- 程序开发场景：把项目里的 H5 用「手机尺寸独立窗口」打开（400×830，独立持久会话 → 登录能记住）----
 // 场景 json 的 code-urls 面板里给条目加 "phone": true 就会出现 📱 按钮；换项目只改 json。
 ipcMain.handle('code:phone-window', (e, url, title) => {

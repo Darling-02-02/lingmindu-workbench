@@ -391,6 +391,14 @@ contextBridge.exposeInMainWorld('app', {
     health: () => ipcRenderer.invoke('rag:health'),
     query: (q, opt) => ipcRenderer.invoke('rag:query', q, opt)
   },
+  // ---- 平台发布前抓取（2026-11-25）：网页面板「📋 抓这一页」 ----
+  // 主进程实现：main.js 的 capture:save / capture:list。
+  // save 落两份：原始 json 在 外壳\data\captures\<面板>-<时间>.json；
+  // 记忆 md（覆盖写）在 <引擎 home>\场景记忆\_共享记忆\平台数据\<面板标题>.md —— dsh 里的 AI 读得到。
+  capture: {
+    save: (panelId, panelTitle, data) => ipcRenderer.invoke('capture:save', panelId, panelTitle, data),
+    list: () => ipcRenderer.invoke('capture:list')
+  },
   // 工具清单（2026-10-21）：顶栏 🛠 面板读 data\工具清单.json
   toolsCatalog: () => ipcRenderer.invoke('tools:catalog'),
   // 窗口控制（自定义标题栏）

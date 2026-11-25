@@ -17593,16 +17593,28 @@ renderers.neuron = (body, meta, head) => {
       nodes.push(core);
 
       var docs = [
-        { id: 'doc-todo', label: '待办', path: META_DIR + '\\_待办.md', ang: 0 },
-        { id: 'doc-msg', label: '通知', path: META_DIR + '\\_跨场景通知.md', ang: Math.PI * 0.66 },
+        // 「关于使用者」是 2026-11-25 加的：之前共享层只挂了 待办/通知/冲突 三个空壳，
+        // 打开神经元只能看到今日计划，看着像"记忆里什么都没有"。
+        // ⚠ 路径一律用 ROOT（= 场景记忆\_共享记忆），不是 META_DIR（那是场景记忆根）——
+        //    这里原来写成 META_DIR + '\_待办.md'，指到了 场景记忆\_待办.md，四个文档节点全是"⛔ 路径已失效"。
+        { id: 'doc-me', label: '关于使用者', path: ROOT + '\\关于使用者.md', ang: -Math.PI * 0.5 },
+        { id: 'doc-todo', label: '待办', path: ROOT + '\\_待办.md', ang: 0 },
+        { id: 'doc-msg', label: '通知', path: ROOT + '\\_跨场景通知.md', ang: Math.PI * 0.66 },
         { id: 'doc-conf', label: '冲突', path: ROOT + '\\冲突.md', ang: Math.PI * 1.33 }
       ];
       var jobs = [];
 
       // 文档节点（放在内核附近）
+      // 同时把正文读进来（截断在详情里显示）—— 只给个大小的话，点开还是什么都不知道。
       docs.forEach(function (d) {
-        jobs.push(statSize(d.path).then(function (sz) {
-          nodes.push({ id: d.id, label: d.label, kind: 'doc', group: 'doc', path: d.path, size: sz, r: 8 });
+        jobs.push(Promise.all([
+          statSize(d.path).catch(function () { return 0; }),
+          readText(d.path).catch(function () { return ''; })
+        ]).then(function (r) {
+          nodes.push({
+            id: d.id, label: d.label, kind: 'doc', group: 'doc', path: d.path,
+            size: r[0] || 0, r: 8, text: r[1] || ''
+          });
           edges.push({ a: 'core', b: d.id, kind: 'doc' });
         }));
       });
@@ -17665,11 +17677,16 @@ renderers.neuron = (body, meta, head) => {
         var list = (memByPanel[a.owner] || (MEMORY_BY_PANEL[a.owner] ? [MEMORY_BY_PANEL[a.owner]] : [])).map(__memAbs);
         list.forEach(function (mp, mi) {
           var isDir = /[\\/]$/.test(mp) || !/\.md$/i.test(mp);
-          (isDir ? Promise.resolve(0) : statSize(mp)).then(function (sz) {
+          // 2026-11-25：顺手把正文读进来。以前只存 size/path，点开私有记忆只有一行路径，
+          // 用户的原话是"只看记忆的话只有待办"——因为别的东西点开都是空的。
+          var szJob = isDir ? Promise.resolve(0) : statSize(mp);
+          var txJob = isDir ? Promise.resolve('') : readText(mp);
+          Promise.all([szJob, txJob]).then(function (rr) {
+            var sz = rr[0], tx = rr[1] || '';
             var id = 'mem-' + a.owner + (list.length > 1 ? ('-' + mi) : '');
             nodes.push({
               id: id, label: '§' + a.owner + (list.length > 1 ? ('·' + (mi + 1)) : ''), kind: 'memory', group: 'memory',
-              path: mp, size: sz || 0, isDir: isDir, ownerPanel: a.owner
+              path: mp, size: sz || 0, isDir: isDir, ownerPanel: a.owner, text: tx
             });
             edges.push({ a: 'area-' + a.owner, b: id, kind: 'memory' });
           });
@@ -17748,7 +17765,9 @@ renderers.neuron = (body, meta, head) => {
           id: 'plan',
           label: '今日计划 ' + pList.length + ' 项·完成 ' + pDone,
           kind: 'memory', group: 'memory',
-          path: pList.length
+          // 2026-11-25：这份列表塞进 path 会被 statOk 判成"路径失效"（它不是真路径，
+          // 于是头部永远挂着一个「⛔ 路径失效 1」，点开也显示"文件不存在"）。改放 text。
+          text: pList.length
             ? pList.map(function (it) { return ((it.time || '--') + '  ' + it.title).trim(); }).join('\n')
             : '今天没有排到计划\n（想看/想改：node 工具\\每日计划.mjs）',
           size: pList.length,
@@ -17763,7 +17782,8 @@ renderers.neuron = (body, meta, head) => {
             id: pid,
             label: mark + ' ' + (String(it.time || '') ? (String(it.time).padStart(5, '0') + ' ') : '') + String(it.title).slice(0, 16),
             kind: 'memory', group: 'memory',
-            path: [it.title, it.note || '', it.due ? ('截止 ' + it.due) : '', 'id=' + it.id].filter(Boolean).join('\n'),
+            // 同上：计划项不是文件，别塞 path（会被判路径失效）
+            text: [it.title, it.note || '', it.due ? ('截止 ' + it.due) : '', 'id=' + it.id].filter(Boolean).join('\n'),
             size: 0, planInfo: it
           });
           edges.push({ a: 'plan', b: pid, kind: 'memory' });
@@ -17882,7 +17902,11 @@ renderers.neuron = (body, meta, head) => {
         }
         edges.push({ a: owner ? owner.id : 'core', b: p.id, kind: 'project' });
       });
-      nodes.forEach(function (n) { delete n.text; n.deg = 0; });
+      // 2026-11-25：原来这里对所有节点 delete n.text，是为了丢掉 area 正文（可能几十 KB）省内存。
+      // 但 doc（共享文档 关于使用者/待办/通知/冲突）和 memory（私有记忆）的正文也被一起删了
+      // ⇒ 详情面板永远是空白，看着像"记忆里什么都没有"。
+      // 现在只丢 area 这类大块，文档/记忆正文留着给「点开看预览」用。
+      nodes.forEach(function (n) { if (n.kind !== 'doc' && n.kind !== 'memory') delete n.text; n.deg = 0; });
       var byId = {}; nodes.forEach(function (n) { byId[n.id] = n; });
     // 尺寸变了就重设位图（真机上 ResizeObserver 有时晚一拍）
     if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
@@ -17902,7 +17926,9 @@ renderers.neuron = (body, meta, head) => {
       var nArea = nodes.filter(function (n) { return n.kind === 'area'; }).length;
       var nPseudo = nodes.filter(function (n) { return n.kind === 'area' && /^(宿主|全体场景)$/.test(String(n.label)); }).length;
       var nChainN = nodes.filter(function (n) { return n.kind === 'chain'; }).length;
-      var nMiss = nodes.filter(function (n) { return n.missing; }).length;
+      var missList = nodes.filter(function (n) { return n.missing; }).map(function (n) { return n.label + ' :: ' + (n.path || ''); });
+      try { window.__neuronMiss = missList; } catch (e) { /* ignore */ }
+      var nMiss = missList.length;
       // 2026-10-27（宿主：这段"看着太丑"）：不再拼一整句纯文本 —— 每项一个小段，整段不拆行；
       //   面板窄时按「·」整段换行（不会把「孤立 0」拆成「孤 / 立 0」），右侧按钮也不会被挤压成两行。
       var nSkillN = nodes.filter(function (n) { return n.kind === 'skill'; }).length;
@@ -19072,6 +19098,13 @@ renderers.neuron = (body, meta, head) => {
     }
     if (n.isDir) detail.appendChild(el('div', 'kneu-ds', '（目录 · 里面按主题分文件）'));
     else if (n.size) detail.appendChild(el('div', 'kneu-ds', '约 ' + (n.size > 1024 ? (n.size / 1024).toFixed(1) + ' KB' : n.size + ' 字节')));
+    // 记忆类文档（待办/关于使用者/场景区域…）：直接把正文摊在这里，省得再去打开文件。
+    if (n.text && String(n.text).trim()) {
+      var body = String(n.text).trim();
+      var box = el('div', 'kneu-dtext');
+      box.textContent = body.length > 1800 ? (body.slice(0, 1800) + '\n\n…（共 ' + body.length + ' 字，点「📂 打开文件」看全部）') : body;
+      detail.appendChild(box);
+    }
     if (n.missing) detail.appendChild(el('div', 'kneu-ds', '⛔ 文件不存在（路径已失效）：' + (n.path || '')));
     // 关系（2026-10-27 审计⑤：边原来只有颜色，这里写清"这条线是什么意思"）
     var relMap = {};
@@ -19088,6 +19121,11 @@ renderers.neuron = (body, meta, head) => {
       detail.appendChild(el('div', 'kneu-ds', k + '（' + relMap[k].length + '）：' + relMap[k].slice(0, 6).join('、') + (relMap[k].length > 6 ? ' …' : '')));
     });
     var row = el('div', 'kneu-drow');
+    var hasPath = !!(n.path || (n.paths && n.paths.length));
+    if (!hasPath) {
+      // 计划项/今日计划这类节点没有文件（内容已经在上面摊开了），别再摆三个点了没反应的按钮。
+      detail.appendChild(el('div', 'kneu-ds', '（这类节点没有文件路径，内容就是上面那段）'));
+    }
     var bOpen = el('button', 'kneu-btn', n.isDir ? '📂 打开目录' : '📂 打开文件');
     bOpen.type = 'button';
     bOpen.addEventListener('click', function (ev) { ev.stopPropagation(); openNode(n); });
@@ -19107,8 +19145,7 @@ renderers.neuron = (body, meta, head) => {
       ev.stopPropagation();
       try { navigator.clipboard.writeText(n.sesInfo ? String(n.sesInfo.id || '') : (n.path || '')); bCopy.textContent = '✓ 已复制'; } catch (e) { /* ignore */ }
     });
-    row.appendChild(bOpen); row.appendChild(bReveal); row.appendChild(bCopy);
-    detail.appendChild(row);
+    if (hasPath) { row.appendChild(bOpen); row.appendChild(bReveal); row.appendChild(bCopy); detail.appendChild(row); }
     // 会话节点：再给两个"点开这条对话"的入口（2026-11-25）
     if (n.sesInfo) {
       var row2 = el('div', 'kneu-drow');

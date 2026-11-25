@@ -5314,3 +5314,27 @@ html[data-skin-bg="1"] .panel-body::-webkit-scrollbar-thumb:hover {
         结果是这两张卡变成半透明，文字直接压在图和节点上，已经删掉。） */
 
 
+
+
+/* ---------- 记忆神经元：节点详情里的正文块（2026-11-25）----------
+   记忆类文档（关于使用者 / 待办 / 场景区域说明）点开就把正文摊在这里。
+   限高 + 内部滚动，别让一段长文本把详情面板撑爆。 */
+.kneu-dtext {
+  margin: 8px 0 4px;
+  padding: 9px 11px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.62;
+  color: var(--text-dim, #98a2b3);
+  background: rgba(0, 0, 0, .22);
+  border: 1px solid var(--panel-line, rgba(255, 255, 255, .08));
+  border-radius: 7px;
+}
+.kneu-dtext::-webkit-scrollbar { width: 8px; }
+.kneu-dtext::-webkit-scrollbar-thumb {
+  background: rgba(var(--accent-rgb, 122, 178, 255), .28);
+  border-radius: 4px;
+}

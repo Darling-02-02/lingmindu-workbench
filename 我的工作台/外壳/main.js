@@ -3935,6 +3935,8 @@ function planWrite(plan) {
       try { fs.copyFileSync(PLAN_FILE, bak); } catch (e) { /* 备份失败不挡写 */ }
     }
     fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + '\n', 'utf8');
+    // 每次写盘顺手刷一遍给人/给 dsh 读的 markdown 镜像（工作区根 + 共享记忆）
+    try { planMirror(plan); } catch (e) { log('[plan] 镜像失败：' + (e && e.message)); }
     return { ok: true, file: PLAN_FILE };
   } catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
 }
@@ -3958,6 +3960,8 @@ function planSanitize(items) {
       note: String(it.note || '').slice(0, 500),
       since: /^\d{4}-\d{2}-\d{2}$/.test(String(it.since || '')) ? String(it.since) : '',
       until: /^\d{4}-\d{2}-\d{2}$/.test(String(it.until || '')) ? String(it.until) : '',
+      // 2026-11-25：这条计划归哪个工作区做（dsh 的 workspaceId）。空 = 不指定。
+      workspace: String(it.workspace || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64),
       logs: (it.logs && typeof it.logs === 'object') ? it.logs : {},
     });
   });
@@ -3998,6 +4002,160 @@ ipcMain.handle('plan:remove', (e, id) => {
 ipcMain.handle('plan:open-file', () => {
   try { if (!fs.existsSync(PLAN_FILE)) planWrite(planRead()); shell.showItemInFolder(PLAN_FILE); return { ok: true, file: PLAN_FILE }; }
   catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
+});
+
+// ================= 计划 ↔ dsh 工作区联动（2026-11-25）=================
+// 需求原话：「今日计划要求 deepseek harness 也可以正常读到，并和今日计划的工作区联动到一起」
+//           「就是要求能指定工作区，负责对应的任务」
+// 三条落地：
+//   ① 计划项带 workspace（dsh 的 workspaceId）⇒ 面板里能选"这条归哪个工作区做"。
+//   ② 每次写盘把清单镜像成两处 markdown（工作区根 + 共享记忆），dsh 会话直接读文件就知道今天该干什么。
+//   ③ 一键在指定工作区开一个会话去做这条计划（session/create + session/rename）。
+const WORKSPACE_FILE = path.join(DSH_DATA_DIR, 'storages', 'workspace.json');
+// 镜像写到**工作台根**下的「工作区」目录（和 工具\每日计划.mjs 的 PLAN_MIRROR 同一份），
+// 不是 HARNESS_DIR（那是 引擎\，写进去人和工具都看不见）。
+const PLAN_MIRROR = path.join(path.dirname(__dirname), '工作区', '今日计划.md');
+const PLAN_MIRROR2 = path.join(DSH_DATA_DIR, '场景记忆', '_共享记忆', '今日计划.md');
+
+function planWsList() {
+  try {
+    const w = JSON.parse(fs.readFileSync(WORKSPACE_FILE, 'utf8').replace(/^\uFEFF/, ''));
+    const t = (w && w.tables && w.tables.workspaces) || {};
+    const def = (w && w.global && w.global.defaultWorkspaceId) || '';
+    return Object.keys(t).map((id) => ({
+      id,
+      title: String((t[id] && t[id].title) || id),
+      path: String((t[id] && t[id].path) || ''),
+      count: Array.isArray(t[id] && t[id].sessionIds) ? t[id].sessionIds.length : 0,
+      def: id === def,
+    })).sort((a, b) => (b.count - a.count) || a.title.localeCompare(b.title));
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') log('[plan] 读不了工作区表 ' + WORKSPACE_FILE + '：' + (e && e.message));
+    return [];
+  }
+}
+function planDowOf(d) { const w = d.getDay(); return w === 0 ? 7 : w; }
+// 今天该做哪些（和面板/命令行同一套规则）：days 空=每天；project 没勾完就一直出现；since/until 夹区间
+function planTodayItems(plan, key, dow) {
+  return (plan.items || []).filter((it) => {
+    if (!it || !it.title) return false;
+    if (it.since && it.since > key) return false;
+    if (it.until && it.until < key) return false;
+    const done = !!(it.logs && it.logs[key] && it.logs[key].done);
+    if ((it.kind || 'routine') === 'project') return !done;
+    const ds = Array.isArray(it.days) ? it.days.map(Number).filter((n) => n >= 1 && n <= 7) : [];
+    return !ds.length || ds.indexOf(dow) >= 0;
+  }).sort((a, b) => String(a.time || '99:99').localeCompare(String(b.time || '99:99')));
+}
+function planMirror(plan) {
+  const now = new Date();
+  const key = planDateKey(now);
+  const dow = planDowOf(now);
+  const wss = planWsList();
+  const wsById = {};
+  wss.forEach((w) => { wsById[w.id] = w; });
+  const list = planTodayItems(plan, key, dow);
+  const doneN = list.filter((it) => !!(it.logs && it.logs[key] && it.logs[key].done)).length;
+  const wd = ['一', '二', '三', '四', '五', '六', '日'];
+  const line = (it, i) => {
+    const done = !!(it.logs && it.logs[key] && it.logs[key].done);
+    const w = it.workspace ? wsById[it.workspace] : null;
+    const tags = [(it.kind || 'routine') === 'project' ? '项目' : ((it.kind === 'once') ? '一次性' : '例行')];
+    if (w) tags.push('工作区：' + (w.title || w.id) + (w.path ? '（' + w.path + '）' : ''));
+    if (it.due) tags.push('截止 ' + it.due);
+    return '- [' + (done ? 'x' : ' ') + '] ' + (it.time ? it.time + ' ' : '') + it.title
+      + ' · ' + tags.join(' · ') + (it.note ? ' — ' + it.note : '') + '  `#' + it.id + '`';
+  };
+  const all = (plan.items || []).slice().sort((a, b) => String(a.time || '99:99').localeCompare(String(b.time || '99:99')));
+  const md = [
+    '# 今日计划 · ' + key + '（周' + wd[dow - 1] + '）',
+    '',
+    '> 这份文件由工作台自动生成，**别手改**：改面板「今日计划」或 `每日计划.json`，写盘后会重新生成。',
+    '> 数据源：`' + PLAN_FILE + '`',
+    '> 命令行：`node 工具\\每日计划.mjs`（`--week` 看七天 / `--add` 加 / `--done` 勾）',
+    '',
+    '## 今天（' + list.length + ' 项，已完成 ' + doneN + '）',
+    '',
+  ].concat(list.length ? list.map(line) : ['- （今天没有排到计划）']).concat([
+    '',
+    '## 全部计划（' + all.length + ' 项）',
+    '',
+  ]).concat(all.length ? all.map(line) : ['- （空）']).concat([
+    '',
+    '## 工作区对照',
+    '',
+  ]).concat(wss.length ? wss.map((w) => '- `' + (w.title || w.id) + '` → ' + w.path + '（' + w.count + ' 条会话' + (w.def ? '，默认' : '') + '）') : ['- （读不到 workspace.json）'])
+    .concat(['']).join('\n');
+  [PLAN_MIRROR, PLAN_MIRROR2].forEach((f) => {
+    try {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, md, 'utf8');
+    } catch (e) { log('[plan] 镜像写不了 ' + f + '：' + (e && e.message)); }
+  });
+  return { mirror: PLAN_MIRROR, today: list.length, done: doneN };
+}
+// dsh 的 /api/<method> 通道（和 外壳\scripts\sessions.mjs 同一套：先 token 换 cookie，再 client-request）
+// cookie 缓存：换一次要 1.4s，连着调两个 rpc 就白等一趟（2026-11-25 实测）。
+let dshCookieCache = '';
+function dshPost(method, argsObj) {
+  return new Promise((resolve) => {
+    let tk = harnessToken;
+    if (!tk) { try { const f = readEngineToken(); if (f && f.token) tk = f.token; } catch (e) { /* ignore */ } }
+    if (!tk) return resolve({ ok: false, err: '没有可用的引擎 token' });
+    const send = (cookie) => {
+      const body = JSON.stringify({ type: 'client-request', rpcId: 'wb1', method: method, payload: { args: argsObj } });
+      const u = new URL(BASE + '/api/' + method);
+      const req = http.request({
+        host: u.hostname, port: u.port, path: u.pathname, method: 'POST', timeout: 60000,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          cookie: cookie,
+          'content-length': Buffer.byteLength(body),
+        },
+      }, (res) => {
+        let b = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { if (b.length < 400000) b += c; });
+        res.on('end', () => {
+          if (res.statusCode === 401 || res.statusCode === 403) dshCookieCache = '';   // cookie 过期，下次重换
+          try { resolve(JSON.parse(b)); } catch (e) { resolve({ ok: false, raw: b.slice(0, 400) }); }
+        });
+      });
+      req.on('error', (e) => resolve({ ok: false, err: String((e && e.message) || e) }));
+      req.on('timeout', () => { req.destroy(); resolve({ ok: false, err: 'timeout' }); });
+      req.write(body);
+      req.end();
+    };
+    if (dshCookieCache) return send(dshCookieCache);
+    getRaw(BASE + '/?token=' + encodeURIComponent(tk)).then((first) => {
+      const raw = (first.headers && first.headers['set-cookie']) || [];
+      const cookie = raw.map((c) => String(c).split(';')[0]).join('; ');
+      if (!cookie) return resolve({ ok: false, err: '拿不到会话 cookie' });
+      dshCookieCache = cookie;
+      send(cookie);
+    });
+  });
+}
+ipcMain.handle('plan:workspaces', () => ({ ok: true, file: WORKSPACE_FILE, items: planWsList(), mirror: PLAN_MIRROR }));
+// 在指定工作区开一个会话去做这条计划
+ipcMain.handle('plan:open-session', async (e, id) => {
+  const p = planRead();
+  const it = (p.items || []).filter((x) => String(x.id) === String(id))[0];
+  if (!it) return { ok: false, err: '没有这条：' + id };
+  const wss = planWsList();
+  let ws = String(it.workspace || '');
+  if (!ws || !wss.some((w) => w.id === ws)) {
+    const d = wss.filter((w) => w.def)[0] || wss.filter((w) => w.path && /AAAlingmindu_wb/i.test(w.path))[0] || wss[0];
+    ws = d ? d.id : '';
+  }
+  if (!ws) return { ok: false, err: '读不到工作区表' };
+  const r = await dshPost('session/create', { request: { workspaceId: ws } });
+  const sid = r && r.result && r.result.value && r.result.value.sessionId;
+  if (!sid) return { ok: false, err: '建会话失败：' + JSON.stringify(r).slice(0, 300) };
+  const title = ('计划 · ' + String(it.title || '')).slice(0, 48);
+  await dshPost('session/rename', { request: { sessionId: sid, title: title } });
+  log('[plan] 已为计划 ' + it.id + ' 建会话 ' + sid + '（工作区 ' + ws + '）');
+  return { ok: true, sessionId: sid, workspace: ws, title: title };
 });
 
 // 已安装插件清单：扫描 dsh 项目的「插件」目录（每个子目录一个插件，含 package.json 元信息）

@@ -59,7 +59,10 @@ contextBridge.exposeInMainWorld('app', {
     save: (plan) => ipcRenderer.invoke('plan:save', plan),
     toggle: (id, day) => ipcRenderer.invoke('plan:toggle', id, day),
     remove: (id) => ipcRenderer.invoke('plan:remove', id),
-    openFile: () => ipcRenderer.invoke('plan:open-file')
+    openFile: () => ipcRenderer.invoke('plan:open-file'),
+    // 与 dsh 工作区联动（2026-11-25）：列出工作区 / 在指定工作区开一个会话去做这条计划
+    workspaces: () => ipcRenderer.invoke('plan:workspaces'),
+    openSession: (id) => ipcRenderer.invoke('plan:open-session', id)
   },
   // 皮肤（2026-11-25）：扫 外壳\skins\<id>\skin.json（对齐 dsh 皮肤契约），换背景 + 换窗口图标
   skins: {

@@ -5070,6 +5070,7 @@ body.wb-resizing { user-select: none; }
 .pb-f-kind { flex: 0 0 96px; }
 .pb-f-due { flex: 0 0 132px; }
 .pb-f-note { flex: 1 1 160px; }
+.pb-f-ws { flex: 0 0 190px; }
 .pb-form-bar { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .pb-hint { font-size: 10px; color: var(--text-dim); margin-right: auto; }
 .pb-btn-save { color: var(--accent); border-color: var(--accent); }
@@ -5094,6 +5095,14 @@ body.wb-resizing { user-select: none; }
 .pb-due { flex: 0 0 auto; font-size: 10px; color: var(--warn); }
 .pb-del { flex: 0 0 18px; font-size: 11px; line-height: 1; padding: 0; width: 18px; height: 18px; border-radius: 5px; cursor: pointer; color: var(--text-dim); background: transparent; border: 1px solid transparent; }
 .pb-del:hover { color: var(--err); border-color: var(--err); }
+/* 2026-11-25：计划 ↔ dsh 工作区联动 */
+.pb-ws { flex: 0 0 auto; max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; padding: 2px 6px; border-radius: 999px; color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.pb-ws-miss { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--border)); }
+.pb-open { flex: 0 0 18px; width: 18px; height: 18px; padding: 0; font-size: 9px; line-height: 1; border-radius: 5px; cursor: pointer; color: var(--accent); background: transparent; border: 1px solid transparent; }
+.pb-open:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.pb-open.pb-open-busy { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 26%, transparent); animation: pb-pulse 1s ease-in-out infinite; }
+@keyframes pb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .38; } }
+.pb-open[disabled] { opacity: .45; cursor: default; }
 .pb-empty { padding: 18px 4px; }
 .pb-empty-t { font-size: 12px; color: var(--text); }
 .pb-empty-s { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.6; }

@@ -77,6 +77,65 @@ function writePlan(plan) {
     try { fs.copyFileSync(FILE, bak); } catch (e) { /* 备份失败不挡写 */ }
   }
   fs.writeFileSync(FILE, JSON.stringify(plan, null, 2) + '\n', 'utf8');
+  try { mirror(plan); } catch (e) { console.error('[每日计划] 镜像 md 写不了：' + e.message); }
+}
+
+// ---- 给人和给 dsh 读的镜像（2026-11-25）----
+// 「今日计划要求 deepseek harness 也可以正常读到」：每次写盘把清单落成 markdown，
+// dsh 在那个工作区开会话直接读文件就知道今天该干什么。
+const PLAN_MIRROR = path.join(ROOT, '工作区', '今日计划.md');
+const PLAN_MIRROR2 = path.join(MEM, '今日计划.md');
+
+function wsList() {
+  try {
+    const w = JSON.parse(fs.readFileSync(path.join(HOME, 'storages', 'workspace.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const t = (w && w.tables && w.tables.workspaces) || {};
+    const def = (w && w.global && w.global.defaultWorkspaceId) || '';
+    return Object.keys(t).map((id) => ({
+      id,
+      title: String((t[id] && t[id].title) || id),
+      path: String((t[id] && t[id].path) || ''),
+      count: Array.isArray(t[id] && t[id].sessionIds) ? t[id].sessionIds.length : 0,
+      def: id === def,
+    })).sort((a, b) => (b.count - a.count) || a.title.localeCompare(b.title));
+  } catch (e) { return []; }
+}
+
+function mirror(plan) {
+  const now = new Date();
+  const k = dateKey(now);
+  const dow = isoDow(now);
+  const wss = wsList();
+  const map = {};
+  wss.forEach((w) => { map[w.id] = w; });
+  const list = (plan.items || []).filter((it) => activeToday(it, now, dow)).sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
+  const doneN = list.filter((it) => doneOn(it, now)).length;
+  const line = (it) => {
+    const done = doneOn(it, now);
+    const w = it.workspace ? map[it.workspace] : null;
+    const tags = [KIND_CN[it.kind || 'routine'] || it.kind];
+    if (w) tags.push('工作区：' + (w.title || w.id) + (w.path ? '（' + w.path + '）' : ''));
+    else if (it.workspace) tags.push('工作区：' + it.workspace + '（已失效）');
+    if (it.due) tags.push('截止 ' + it.due);
+    return '- [' + (done ? 'x' : ' ') + '] ' + (it.time ? it.time + ' ' : '') + it.title
+      + ' · ' + tags.join(' · ') + (it.note ? ' — ' + it.note : '') + '  `#' + it.id + '`';
+  };
+  const all = (plan.items || []).slice().sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
+  const md = ['# 今日计划 · ' + k + '（' + DOW_CN[dow] + '）', '',
+    '> 这份文件由工作台/命令行自动生成，**别手改**：改面板「今日计划」或 `每日计划.json`，写盘后会重新生成。',
+    '> 数据源：`' + FILE + '`',
+    '> 命令行：`node 工具\\每日计划.mjs`（`--week` 看七天 / `--add` 加 / `--done` 勾 / `--ws <工作区id>` 指定工作区）',
+    '', '## 今天（' + list.length + ' 项，已完成 ' + doneN + '）', '']
+    .concat(list.length ? list.map(line) : ['- （今天没有排到计划）'])
+    .concat(['', '## 全部计划（' + all.length + ' 项）', ''])
+    .concat(all.length ? all.map(line) : ['- （空）'])
+    .concat(['', '## 工作区对照', ''])
+    .concat(wss.length ? wss.map((w) => '- ' + (w.title || w.id) + ' → ' + w.path + '（' + w.count + ' 条会话' + (w.def ? '，默认' : '') + '） id=' + w.id) : ['- （读不到 workspace.json）'])
+    .concat(['']).join('\n');
+  [PLAN_MIRROR, PLAN_MIRROR2].forEach((f) => {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, md, 'utf8');
+  });
 }
 
 // 一条计划今天是否"该出现"
@@ -214,6 +273,17 @@ if (argv.includes('--check')) {
   process.exit(bad.length ? 1 : 0);
 }
 
+// --ws list：列 dsh 工作区（id ↔ 标题 ↔ 路径），给 --ws <id> 用
+if (String(flag('ws')) === 'list') {
+  const wss = wsList();
+  if (!wss.length) { console.log('读不到工作区表：' + path.join(HOME, 'storages', 'workspace.json')); process.exit(1); }
+  console.log('dsh 工作区 ' + wss.length + ' 个（按会话数排）：');
+  wss.forEach((w) => {
+    console.log('  ' + String(w.title || w.id).padEnd(26) + '  ' + String(w.path).padEnd(58) + '  ' + (w.count + ' 会话').padEnd(9) + '  ' + w.id + (w.def ? '  [默认]' : ''));
+  });
+  process.exit(0);
+}
+
 if (flag('add')) {
   const title = String(flag('add'));
   if (title === 'true' || !title.trim()) { console.error('--add 后面要跟标题'); process.exit(2); }
@@ -235,6 +305,8 @@ if (flag('add')) {
     kind,
     due,
     note: (typeof flag('note') === 'string' ? String(flag('note')) : ''),
+    // 2026-11-25：归哪个 dsh 工作区做（workspaceId，`--ws list` 可以看到全部）
+    workspace: (typeof flag('ws') === 'string' ? String(flag('ws')).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) : ''),
     since: dateKey(today),
     until: '',
     logs: {},

@@ -17437,7 +17437,7 @@ renderers.neuron = (body, meta, head) => {
     // dataSources 以前是空的 ⇒ 神经元只有一张手工图，看不见引擎里跑着的 46 个会话。
     // 同步失败不影响画图（catch 吞掉，读到的就是上一份）。
     var pre = (window.app && window.app.memorySync)
-      ? window.app.memorySync().catch(function () { return null; })
+      ? window.app.memorySync(true).catch(function () { return null; })   // true = 绕过 30s 节流，点「重读」就该真读
       : Promise.resolve(null);
     return pre.then(function () { return Promise.all([readText(ROOT + '\\索引.json'), readText(ROOT + '\\项目.json'), readText(ROOT + '\\记忆地图.json'), readText(ROOT + '\\每日计划.json')]); }).then(function (both) {
       var txt = both && both[0];
@@ -18701,9 +18701,19 @@ renderers.neuron = (body, meta, head) => {
   }
   document.addEventListener("visibilitychange", onVisChange);
 
+  // 2026-11-25：每 60 秒自己跟 dsh 对齐一次 —— 新建/归档会话、改了工作区、改了每日计划，
+  // 面板上不用手点 ↻ 也会跟上。只在面板可见时跑（隐藏的 webview 里跑等于白烧 CPU）。
+  var syncBusy = false;              // 上一次同步还没回来时别叠第二次（memorySync 要几秒）
+  var syncTimer = setInterval(function () {
+    if (disposed || !visible || syncBusy) return;
+    syncBusy = true;
+    Promise.resolve(load()).then(function () { syncBusy = false; }, function () { syncBusy = false; });
+  }, 60000);
+
   delete body.dataset.neuronDone;
   return function cleanup() {
     disposed = true;
+    clearInterval(syncTimer);
     if (raf) cancelAnimationFrame(raf);
     if (ro) { try { ro.disconnect(); } catch (e) { /* ignore */ } }
     cv.removeEventListener('pointerdown', onDown);
@@ -18756,9 +18766,11 @@ renderers['plan-board'] = (body, meta) => {
   });
   const fDue = el('input', 'pb-input pb-f-due'); fDue.placeholder = '2026-12-05（项目用，可空）';
   const fNote = el('input', 'pb-input pb-f-note'); fNote.placeholder = '备注（可空）';
+  // 2026-11-25：这条计划归哪个 dsh 工作区做（联动「开会话」按钮）
+  const fWs = el('select', 'pb-input pb-f-ws');
   const bSave = el('button', 'pb-btn pb-btn-save', '存进去');
   const bCancel = el('button', 'pb-btn', '取消');
-  [[fTitle, 'pb-f-title'], [fTime, 'pb-f-time'], [fDays, 'pb-f-days'], [fKind, 'pb-f-kind'], [fDue, 'pb-f-due'], [fNote, 'pb-f-note']]
+  [[fTitle, 'pb-f-title'], [fTime, 'pb-f-time'], [fDays, 'pb-f-days'], [fKind, 'pb-f-kind'], [fDue, 'pb-f-due'], [fNote, 'pb-f-note'], [fWs, 'pb-f-ws']]
     .forEach((pair) => form.appendChild(pair[0]));
   const formBar = el('div', 'pb-form-bar');
   formBar.appendChild(el('span', 'pb-hint', '固定计划按时辰排；项目只看截止日，做完就不会再出现'));
@@ -18772,6 +18784,39 @@ renderers['plan-board'] = (body, meta) => {
   body.appendChild(list);
 
   let today = key(new Date());
+  // 2026-11-25：dsh 工作区清单（联动用）—— 每条计划可以指定由哪个工作区负责
+  let WSS = [];
+  const WSMAP = {};
+  function shortPath(p) {
+    const s = String(p || '').replace(/[\\/]+$/, '');
+    const i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  function fillWs() {
+    const keep = String(fWs.value || '');
+    fWs.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = ''; o0.textContent = '工作区：不指定';
+    fWs.appendChild(o0);
+    WSS.forEach((w) => {
+      const o = document.createElement('option');
+      o.value = w.id;
+      o.textContent = (w.title || w.id) + (w.path ? ' · ' + shortPath(w.path) : '') + (w.def ? '（默认）' : '');
+      fWs.appendChild(o);
+    });
+    if (keep) fWs.value = keep;
+  }
+  function loadWs() {
+    if (!A || !A.workspaces) return Promise.resolve();
+    return A.workspaces().then((r) => {
+      if (r && r.ok) {
+        WSS = r.items || [];
+        Object.keys(WSMAP).forEach((k) => { delete WSMAP[k]; });
+        WSS.forEach((w) => { WSMAP[w.id] = w; });
+        fillWs();
+      }
+    }).catch(() => { });
+  }
 
   function activeToday(it, d, dow) {
     if (!it || !it.title) return false;
@@ -18813,6 +18858,36 @@ renderers['plan-board'] = (body, meta) => {
     if (it.note) nm.title = it.note;
     const kind = el('span', 'pb-kind pb-kind-' + (it.kind || 'routine'), KIND_CN[it.kind || 'routine'] || it.kind);
     const due = el('span', 'pb-due', dueText(it));
+    // 归属工作区：有指定就显示名字，并给一个"去那个工作区开个会话做这件事"的入口
+    const w = it.workspace ? WSMAP[it.workspace] : null;
+    let wsTag = null;
+    if (w) {
+      wsTag = el('span', 'pb-ws', w.title || w.id);
+      wsTag.title = '指定工作区：' + (w.path || w.id) + '（点 ▶ 在旁边开一个会话做这件事）';
+    } else if (it.workspace) {
+      wsTag = el('span', 'pb-ws pb-ws-miss', '工作区已失效');
+      wsTag.title = '计划里记的 workspaceId 在 dsh 里找不到了：' + it.workspace;
+    }
+    const open = el('button', 'pb-open', '▶');
+    open.title = '在指定工作区开一个会话做这件事（session/create + 改名）';
+    open.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (!A || !A.openSession) return;
+      open.disabled = true;
+      open.classList.add('pb-open-busy');
+      // dsh 的 session/create 本身要 10 秒以上（实测 14.4s），先给个话，别让人以为卡死
+      sub.textContent = '正在开会话…（dsh 建会话要 10 秒左右，别关窗口）';
+      A.openSession(it.id).then((r) => {
+        open.disabled = false;
+        open.classList.remove('pb-open-busy');
+        if (r && r.ok) {
+          const ws = WSMAP[r.workspace];
+          sub.textContent = '已建会话 ' + String(r.sessionId).slice(0, 12) + '… · 工作区 ' + ((ws && ws.title) || r.workspace) + ' · 到「DSH 引擎」里找它';
+        } else {
+          sub.textContent = '开会话失败：' + ((r && r.err) || '未知');
+        }
+      }).catch((e) => { open.disabled = false; open.classList.remove('pb-open-busy'); sub.textContent = '开会话失败：' + e; });
+    });
     const del = el('button', 'pb-del', '✕');
     del.title = '删掉这条（会备份到 .bak-plan-*）';
     del.addEventListener('click', (ev) => {
@@ -18820,7 +18895,9 @@ renderers['plan-board'] = (body, meta) => {
       if (!A) return;
       A.remove(it.id).then((r) => { if (r && r.ok) load(); }).catch(() => { });
     });
-    row.appendChild(chk); row.appendChild(t); row.appendChild(nm); row.appendChild(kind); row.appendChild(due); row.appendChild(del);
+    row.appendChild(chk); row.appendChild(t); row.appendChild(nm); row.appendChild(kind); row.appendChild(due);
+    if (wsTag) row.appendChild(wsTag);
+    row.appendChild(open); row.appendChild(del);
     return row;
   }
 
@@ -18856,7 +18933,7 @@ renderers['plan-board'] = (body, meta) => {
       list.appendChild(el('div', 'pb-empty-s', '这个面板要在工作台窗口里跑（拿不到 plan 接口）'));
       return;
     }
-    A.read().then((r) => {
+    loadWs().catch(() => { }).then(() => A.read()).then((r) => {
       if (!r || !r.ok) { sub.textContent = '读不了计划文件'; return; }
       paint(r.plan || { items: [] });
     }).catch((e) => { sub.textContent = '读失败：' + e; });
@@ -18887,6 +18964,7 @@ renderers['plan-board'] = (body, meta) => {
         kind: String(fKind.value || 'routine'),
         due: String(fDue.value || '').trim(),
         note: String(fNote.value || '').trim(),
+        workspace: String(fWs.value || ''),
         since: today,
         until: '',
         logs: {},
@@ -18894,7 +18972,7 @@ renderers['plan-board'] = (body, meta) => {
       return A.save(plan);
     }).then((rr) => {
       if (rr && rr.ok) {
-        fTitle.value = ''; fTime.value = ''; fDays.value = ''; fDue.value = ''; fNote.value = '';
+        fTitle.value = ''; fTime.value = ''; fDays.value = ''; fDue.value = ''; fNote.value = ''; fWs.value = '';
         form.style.display = 'none';
         load();
       } else if (rr && rr.err) { sub.textContent = '存不进去：' + rr.err; }

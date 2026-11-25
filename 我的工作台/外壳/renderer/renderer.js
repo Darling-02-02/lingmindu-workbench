@@ -823,12 +823,41 @@ function refreshBgLayer(sk) {
   lay.style.opacity = src ? String(op) : '0';
   document.documentElement.setAttribute('data-skin-bg', src ? '1' : '0');
   document.documentElement.setAttribute('data-skin-userbg', USER_BG ? '1' : '0');
+  // ⚠️ 2026-11-25 实测：只靠 #skin-bg-layer（position:fixed + z-index:-1）这层，
+  // 在「滚动容器 + 合成层」的组合下会被整层丢掉 —— elementsFromPoint 里看不到它、
+  // 把它背景刷成纯绿截图里也没有绿，只有 panel-head 的 backdrop-filter 还能采到它。
+  // 所以在根元素上再铺一份（background-attachment:fixed 的效果和负层一样，但永远画得出）。
+  const root = document.documentElement;
+  if (src) {
+    root.style.backgroundImage = 'url("' + src + '")';
+    root.style.backgroundSize = 'cover';
+    root.style.backgroundPosition = 'center center';
+    root.style.backgroundRepeat = 'no-repeat';
+    root.style.backgroundAttachment = 'fixed';
+  } else {
+    root.style.backgroundImage = '';
+    root.style.backgroundSize = '';
+    root.style.backgroundPosition = '';
+    root.style.backgroundRepeat = '';
+    root.style.backgroundAttachment = '';
+  }
+  // 把同一张图交给神经元：CSS 层在这个窗口里画不出来（见上面那段注释），
+  // 只有 canvas 自绘可靠。renderers.js 的 paintBgImage() 读这个全局。
+  try {
+    window.__neuronBg = src ? { src: src, opacity: Math.max(0.15, Math.min(1, op || 0.62)) } : null;
+    if (window.__neuronRedraw) window.__neuronRedraw();
+  } catch (e) { /* ignore */ }
 }
 function applyUserBg(bg) {
   USER_BG = (bg && bg.url) ? { url: bg.url, name: bg.name || '', opacity: Number(bg.opacity) || 0.55 } : null;
   refreshBgLayer(extSkinOf(currentSkin()));
   applySkinPalette(extSkinOf(currentSkin()));   // 换了图就重新取一次色，卡片配色跟着走
   injectSkinIntoHarness(true);                  // 换了图，内嵌的 dsh 页面跟着换（2026-11-25）
+  redrawNeuron();                              // 神经元的压暗层跟着 data-skin-bg 变，要重画一帧
+}
+// 让神经元的画布重画一次（它静止时会彻底停帧，不叫醒就还是旧的浓淡）
+function redrawNeuron() {
+  try { if (window.__neuronRedraw) window.__neuronRedraw(); } catch (e) { /* ignore */ }
 }
 // 把「外部皮肤」落到页面：清掉上一个的 bodyAttr / link / 背景 / 变量，再挂新的。
 // 内置 5 套配色不走这里（它们在 skins.css 里，靠 html[data-skin]）。
@@ -869,6 +898,7 @@ function applySkin(k) {
   document.documentElement.dataset.skin = ext ? 'ext' : (k || 'aurora');
   applyExtSkin(ext);
   injectSkinIntoHarness();   // 内嵌的 dsh 页面也铺同一张底（2026-11-25）
+  redrawNeuron();
 }
 // ---- 把背景图同步进内嵌的 dsh 页面（2026-11-25）----
 // 要求：「整个背景图，包括当前的 DeepSeek Harness、神经元页面」都要一套。神经元是本进程自绘的 canvas，

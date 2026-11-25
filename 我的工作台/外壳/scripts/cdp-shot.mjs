@@ -37,7 +37,14 @@ if (sel) {
   const b = r.result.value;
   if (b && b.width > 4) clip = { ...b, scale: 1 };
 }
-const shot = await send('Page.captureScreenshot', clip ? { format: 'png', clip } : { format: 'png' });
+// ⚠️ fromSurface:true（默认）只抓合成 surface，某些 GPU 配置下会丢掉窗口的根背景层
+// （html/body 的 background 完全不出现，截图里全黑，但真实屏幕是有的）。
+// 用 SHOT_NOSURFACE=1 走渲染进程本地合成，能把根背景抓出来。
+const shot = await send('Page.captureScreenshot', {
+  format: 'png',
+  fromSurface: process.env.SHOT_NOSURFACE ? false : true,
+  ...(clip ? { clip } : {}),
+});
 fs.writeFileSync(out, Buffer.from(shot.data, 'base64'));
 console.log('已保存 ' + out + (clip ? `（裁剪 ${Math.round(clip.width)}×${Math.round(clip.height)}）` : '（整页）'));
 ws.close();

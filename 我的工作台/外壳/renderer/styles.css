@@ -5225,4 +5225,17 @@ html[data-theme="light"] .kflow { background: rgba(250, 251, 253, .975); }
 .kneu-go { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: #9fc3ff; }
 .kneu-go:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
+/* 有背景图时，自绘面板（神经元 / 每日计划）的底板再薄一层：
+   图才是主角，节点和文字靠 panel 上的 backdrop-filter 磨砂 + canvas 里的暗角够分辨。
+   canvas 每帧 clearRect，自己是透明的，所以底板一薄图就直接透上来。
+   特异性 (0,3,1) 压得住皮肤里的 body[data-dsh-xxx] .panel (0,2,1)。 */
+html[data-skin-bg="1"] .panel[data-panel-id="cmd-neuron"],
+html[data-skin-bg="1"] .panel[data-panel-id="cmd-plan"] {
+  background: color-mix(in srgb, var(--bg-panel, #10131a) 44%, transparent);
+}
+html[data-skin-bg="1"] .panel[data-panel-id="cmd-neuron"] > .panel-head,
+html[data-skin-bg="1"] .panel[data-panel-id="cmd-plan"] > .panel-head {
+  background: color-mix(in srgb, var(--bg-panel, #10131a) 30%, transparent);
+}
+
 

@@ -18168,6 +18168,35 @@ renderers.neuron = (body, meta, head) => {
       } catch (e2) { /* ignore */ }
     }
   }
+  // 2026-11-25：背景图**直接画进 canvas**。
+  // 为什么不用 CSS：#skin-bg-layer（fixed + z-index:-1）、html/body 的 background、
+  // 甚至 #grid 自己的 background-image，在这个 Electron 窗口里都画不到屏幕上
+  // （实测把那一层刷成纯绿、截图里一点绿都没有，只有 backdrop-filter 还能采到图）。
+  // canvas 自己画的内容一定看得见（节点就画得好好的），所以走这条。
+  var bgImg = null, bgImgSrc = '', bgImgState = 0;   // 0=无图 1=加载中 2=就绪 3=失败
+  function paintBgImage(ctx) {
+    var conf = window.__neuronBg || null;
+    var src = (conf && conf.src) ? String(conf.src) : '';
+    if (!src) { bgImg = null; bgImgSrc = ''; bgImgState = 0; return; }
+    if (src !== bgImgSrc) {
+      bgImgSrc = src;
+      bgImgState = 1;
+      bgImg = new Image();
+      bgImg.onload = function () { bgImgState = 2; try { markDirty(); } catch (e) { /* ignore */ } };
+      bgImg.onerror = function () { bgImgState = 3; try { markDirty(); } catch (e) { /* ignore */ } };
+      bgImg.src = src;
+      return;
+    }
+    if (bgImgState !== 2 || !bgImg) return;
+    var iw = bgImg.naturalWidth, ih = bgImg.naturalHeight;
+    if (!iw || !ih) return;
+    var sc = Math.max(W / iw, H / ih);          // cover：等比铺满，多出来的居中裁掉
+    var dw = iw * sc, dh = ih * sc;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, (conf.opacity == null ? 0.62 : Number(conf.opacity) || 0) * 0.72));
+    ctx.drawImage(bgImg, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    ctx.restore();
+  }
   function drawInner(ctx) {
     autoFit();                      // 2026-11-25：先算"刚好装得下"的系数，再投影（见 project 上方的说明）
     // 诊断钩子：页面里 window.__neuronDbg = true 之后，这里会把节点投影的包围盒记到
@@ -18186,9 +18215,14 @@ renderers.neuron = (body, meta, head) => {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
+    // 有背景图时（html[data-skin-bg="1"]）把这层压暗收薄：图要看得见，节点靠磨砂底板的分辨率还够。
+    // 2026-11-25 用户要求「神经元的背景也跟引擎页面一样，整张图铺上去」。
+    var softBg = document.documentElement.getAttribute('data-skin-bg') === '1';
+    // 整张背景图铺进画布（见 paintBgImage 上面那段说明：CSS 那条路在这个窗口里画不出来）
+    paintBgImage(ctx);
     // 背景：中心微光
     var bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.62);
-    bg.addColorStop(0, 'rgba(30,54,96,.55)');
+    bg.addColorStop(0, softBg ? 'rgba(30,54,96,.14)' : 'rgba(30,54,96,.55)');
     bg.addColorStop(1, 'rgba(6,9,16,0)');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
@@ -18204,10 +18238,10 @@ renderers.neuron = (body, meta, head) => {
         ctx.fill();
       }
     }
-    // 暗角：把注意力收到中间
+    // 暗角：把注意力收到中间（有背景图时收薄，不然四角一块死黑把图吃掉了）
     var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.78);
     vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(2,4,9,.55)');
+    vg.addColorStop(1, softBg ? 'rgba(2,4,9,.34)' : 'rgba(2,4,9,.55)');
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, W, H);
 
@@ -18576,6 +18610,8 @@ renderers.neuron = (body, meta, head) => {
     // zzz-idle-stop：帧循环已经停了 ⇒ 用户一动就把它叫醒（否则 hover/拖拽不会有反馈）
     if (!disposed && visible && !raf) { raf = requestAnimationFrame(loop); }
   }
+  // 外面换皮肤/换背景图时要能让画布重画一次（压暗层的浓淡跟着 html[data-skin-bg] 走）
+  try { window.__neuronRedraw = markDirty; } catch (e) { /* ignore */ }
   ["pointerdown", "pointermove", "wheel", "keydown", "input", "click"].forEach(function (evName) {
     try { body.addEventListener(evName, markDirty, true); } catch (e) { /* ignore */ }
   });

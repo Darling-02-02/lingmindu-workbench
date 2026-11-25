@@ -45,7 +45,7 @@ const MAP = [
 /** 外壳 下允许递归的子目录 */
 const SHELL_SUBS = ['renderer', 'scenarios', 'scripts', 'skins']
 /** 根目录单文件 */
-const ROOT_FILES = ['启动.vbs', 'launch-inner.cmd', '.gitignore']
+const ROOT_FILES = ['启动.vbs', 'launch-inner.cmd', '刷B站归组.cmd', '.gitignore']
 
 /** 文件名级排除 */
 const EXCLUDE_NAMES = [/\.bak/i, /^server\.log/i, /\.log$/i, /^Thumbs\.db$/i, /^desktop\.ini$/i]

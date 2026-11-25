@@ -605,6 +605,22 @@ async function startServer() {
     markEngineGood();
     return true;
   }
+
+  // 引擎没在跑 ⇒ 这是**唯一**能安全改 workspace.json 的时刻（运行中的引擎只用内存态，改盘会被它覆盖回去）。
+  // 目的：把历史上堆在「未分组」的刷B站会话补登记进 D:\AAA刷B站 那个工作区。
+  // 一次性：写过 storages\.regroup-once.done 之后就不再跑，免得把用户以后在同一个 cwd 下新建的会话也拖进刷B站。
+  try {
+    const regroup = path.join(__dirname, '..', '工具', '工作区归组.mjs');
+    const nodeExe = resolveNodeExe();
+    if (fs.existsSync(regroup) && nodeExe) {
+      const r = spawnSync(nodeExe, [regroup, '--apply', '--once', '--unarchive', '--from', 'D:\\AAAdafeiyu', '--to-path', 'D:\\AAA刷B站'], {
+        cwd: path.join(__dirname, '..'), timeout: 20000, encoding: 'utf8',
+      });
+      const line = String((r && r.stdout) || '').trim().split('\n').filter(Boolean).pop() || '无输出';
+      log('[workspace] 刷B站会话归组：' + line);
+    }
+  } catch (e) { log('[workspace] 刷B站会话归组失败（不影响启动）: ' + String((e && e.message) || e)); }
+
   const plans = [];
   if (fs.existsSync(CLI_BUILT)) {
     plans.push({ label: '内置入口', detail: 'apps/cli/lib/bin.js（跳过 pnpm / tsx）', spawn: spawnServerDirect, budget: 600 });

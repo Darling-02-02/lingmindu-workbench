@@ -5394,3 +5394,41 @@ html[data-skin-bg="1"] .panel-body::-webkit-scrollbar-thumb:hover {
   border: 1px dashed var(--border); border-radius: 8px;
 }
 .rg-foot { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; min-height: 14px; }
+
+/* ==================== 项目结构浮层（2026-11-26，使用者 m04794）====================
+   神经元里点工作区 → 「🗂 项目结构 / 🕸 结构图」两层浮层。结构树用原生
+   <details>/<summary> 折叠（自带展开状态，不用自己记），所以这里只需要把默认的
+   三角标记换成 ▸/▾、把每层缩进 14px、给行加悬停底色。 */
+.kproj .kflow-body { padding: 10px 14px 18px; }
+.kp-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px; }
+.kp-tools .kflow-tab[disabled] { opacity: .42; cursor: default; }
+.kp-tools .kflow-tab.kp-busy { animation: kpPulse 1s ease-in-out infinite; }
+@keyframes kpPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+.kp-tree { font: 12px/1.72 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.kp-tree details { margin-left: 14px; }
+.kp-tree > details { margin-left: 0; }
+.kp-d > summary {
+  cursor: pointer; list-style: none; padding: 1px 5px; border-radius: 4px;
+  color: var(--text); display: flex; align-items: center; gap: 6px;
+}
+.kp-d > summary::-webkit-details-marker { display: none; }
+.kp-d > summary:hover { background: rgba(var(--accent-rgb, 122, 178, 255), .10); }
+.kp-d > summary::before { content: '▸'; width: 12px; color: var(--text-dim); flex: 0 0 auto; }
+.kp-d[open] > summary::before { content: '▾'; }
+.kp-f {
+  margin-left: 14px; padding: 1px 5px; border-radius: 4px;
+  display: flex; align-items: center; gap: 6px; color: var(--text);
+}
+.kp-f:hover { background: rgba(var(--accent-rgb, 122, 178, 255), .07); }
+.kp-ico { width: 14px; flex: 0 0 auto; text-align: center; opacity: .9; }
+.kp-nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kp-d > summary > i, .kp-f > i {
+  font-style: normal; font-size: 11px; color: var(--text-dim);
+  margin-left: 8px; flex: 0 0 auto;
+}
+.kp-more { margin-left: 20px; font-size: 11px; font-style: italic; color: var(--text-dim); }
+.kp-warn {
+  margin: 6px 0; padding: 6px 9px; border-radius: 6px; font-size: 12px; color: #f2c98a;
+  background: rgba(242, 201, 138, .10); border: 1px solid rgba(242, 201, 138, .28);
+}
+.kp-map .kflow-meta { margin-bottom: 8px; }

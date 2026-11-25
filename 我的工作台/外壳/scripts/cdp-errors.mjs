@@ -1,7 +1,7 @@
 // 抓渲染层报错：连 CDP → 开 Runtime/Log → 重载页面 → 收集 N 秒内的异常与控制台错误。
 // 用法：node 外壳\scripts\cdp-errors.mjs [秒数] [page|webview]
 async function pickPort() {
-  for (const p of [9225, 9224, 9223, 9222]) {
+  for (const p of [9226, 9225, 9224, 9223, 9222]) {
     try {
       const r = await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(1200) });
       if (r.ok) return p;

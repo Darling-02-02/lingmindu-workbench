@@ -18891,6 +18891,216 @@ renderers.neuron = (body, meta, head) => {
   var fmtAt = function (ts) { if (!ts) return '—'; try { var d = new Date(Number(ts)); return d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'); } catch (e) { return '—'; } };
 
   // 打开浮层（拓扑 / 全文 两页共用一个外壳）
+  // ---- 点开一个工作区：项目结构 / 结构图（2026-11-26，使用者 m04794 的要求）----
+  //   「神经元点击进去要有各个工作区项目对应的项目结构，同时用 graphify 对各个工作区的项目
+  //     进行绘图制作，能自动对各个项目做这个项目结构图。」
+  // ⓐ 目录结构：走 projects:tree，主进程自己 fs 递归（跳过 node_modules 等），没装 python 也能看；
+  // ⓑ 结构图：走 projects:map-*，读 工具\项目结构图.mjs 用 graphify（--code-only，纯本地 AST）
+  //    画出来的 tree.html / graph.html，产物在 外壳\data\project-maps\<工作区>\。
+  function kpEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+    });
+  }
+  function kpSize(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + 'M';
+    if (n >= 1024) return Math.round(n / 1024) + 'K';
+    return n ? (n + 'B') : '';
+  }
+  var KP_ICO = {
+    js: '🟨', mjs: '🟨', cjs: '🟨', ts: '🟦', tsx: '🟦', jsx: '🟦', json: '🔧', md: '📄', txt: '📄',
+    css: '🎨', html: '🌐', py: '🐍', exe: '⚙', dll: '⚙', ico: '🖼', png: '🖼', jpg: '🖼', jpeg: '🖼',
+    webp: '🖼', gif: '🖼', svg: '🖼', mp4: '🎬', zstd: '🗜', zip: '🗜', yml: '🔧', yaml: '🔧',
+    bat: '⌨', cmd: '⌨', ps1: '⌨', sh: '⌨'
+  };
+  function kpIco(name) {
+    var e = String(name || '').split('.').pop().toLowerCase();
+    return KP_ICO[e] || '·';
+  }
+  // 用 <details>/<summary> 做折叠：浏览器自带，不需要自己写展开状态
+  function kpTreeHtml(list, depth) {
+    var out = '';
+    (list || []).forEach(function (c) {
+      if (c.dir) {
+        out += '<details class="kp-d"' + (depth <= 1 ? ' open' : '') + '><summary>'
+          + '<span class="kp-ico">📁</span><span class="kp-nm">' + kpEsc(c.name) + '</span>'
+          + '<i>' + ((c.children && c.children.length) || 0) + '</i></summary>'
+          + (c.more ? '<div class="kp-more">（到这一层就截断了，要更深的用「📂 打开目录」）</div>' : '')
+          + kpTreeHtml(c.children, depth + 1) + '</details>';
+      } else {
+        out += '<div class="kp-f"><span class="kp-ico">' + kpIco(c.name) + '</span>'
+          + '<span class="kp-nm">' + kpEsc(c.name) + '</span><i>' + kpSize(c.size) + '</i></div>';
+      }
+    });
+    return out;
+  }
+  function kpKeyOf(title) {
+    // 只给 projects:map-* 做个提示用；真正的匹配在主进程里扫 meta.json（key/标题/id/路径都认）
+    return String(title || '');
+  }
+
+  function openProjectPane(dirPath, title, key, tab) {
+    var dir = String(dirPath || '');
+    var APP = window.app || {};
+    if (!dir) { stat.textContent = '这个工作区没有登记路径，看不到结构'; return; }
+    if (!APP.projects) { stat.textContent = '这个版本没有项目结构的通道（重启一下工作台）'; return; }
+    var old = body.querySelector('.kflow');
+    if (old) old.remove();
+
+    var box = el('div', 'kflow kproj');
+    var head = el('div', 'kflow-head');
+    head.appendChild(el('div', 'kflow-title', '🗂 ' + String(title || '项目')));
+    var tabs = el('div', 'kflow-tabs');
+    var bTree = el('button', 'kflow-tab', '🗂 目录结构');
+    var bMap = el('button', 'kflow-tab', '🕸 结构图');
+    bTree.type = 'button'; bMap.type = 'button';
+    if (tab === 'map') bMap.classList.add('on'); else bTree.classList.add('on');
+    tabs.appendChild(bTree); tabs.appendChild(bMap);
+    head.appendChild(tabs);
+    var bClose = el('button', 'kflow-x', '✕');
+    bClose.type = 'button';
+    bClose.title = '关掉（Esc）';
+    head.appendChild(bClose);
+    var pane = el('div', 'kflow-body');
+    box.appendChild(head); box.appendChild(pane);
+    body.appendChild(box);
+
+    var close = function () { box.remove(); document.removeEventListener('keydown', onEsc, true); };
+    var onEsc = function (ev) { if (ev.key === 'Escape') close(); };
+    document.addEventListener('keydown', onEsc, true);
+    bClose.addEventListener('click', close);
+    bTree.addEventListener('click', function () { bTree.classList.add('on'); bMap.classList.remove('on'); paintTree(); });
+    bMap.addEventListener('click', function () { bMap.classList.add('on'); bTree.classList.remove('on'); paintMap(); });
+
+    // ⓐ 目录结构
+    function paintTree(depth) {
+      pane.innerHTML = '';
+      pane.appendChild(el('div', 'kflow-load', '正在读目录…（跳过 node_modules/.git/构建产物）'));
+      APP.projects.tree(dir, { depth: depth || 3 }).then(function (r) {
+        pane.innerHTML = '';
+        if (!r || !r.ok) { pane.appendChild(el('div', 'kflow-load', '读不动：' + ((r && r.err) || '未知原因'))); return; }
+        var meta = el('div', 'kflow-meta');
+        var c1 = el('span', 'kflow-chip');
+        c1.appendChild(el('b', '', '根 '));
+        c1.appendChild(document.createTextNode(r.name || ''));
+        meta.appendChild(c1);
+        var c2 = el('span', 'kflow-chip');
+        c2.appendChild(el('b', '', '条目 '));
+        c2.appendChild(document.createTextNode(String(r.count || 0) + (r.truncated ? '（已截断）' : '')));
+        meta.appendChild(c2);
+        var c3 = el('span', 'kflow-chip');
+        c3.appendChild(el('b', '', '层数 '));
+        c3.appendChild(document.createTextNode(String(r.depth || 3)));
+        meta.appendChild(c3);
+        pane.appendChild(meta);
+        pane.appendChild(el('div', 'kflow-path', dir));
+
+        var tools = el('div', 'kp-tools');
+        var bDeep = el('button', 'kflow-tab', '再深一层');
+        bDeep.type = 'button';
+        bDeep.disabled = (depth || 3) >= 6;
+        bDeep.addEventListener('click', function () { paintTree(Math.min(6, (depth || 3) + 1)); });
+        var bReload2 = el('button', 'kflow-tab', '⟳ 重读');
+        bReload2.type = 'button';
+        bReload2.addEventListener('click', function () { paintTree(depth || 3); });
+        var bOpenDir = el('button', 'kflow-tab', '📂 打开目录');
+        bOpenDir.type = 'button';
+        bOpenDir.addEventListener('click', function () {
+          var A2 = (window.app && window.app.app) || null;
+          if (A2 && A2.revealPath) Promise.resolve(A2.revealPath(dir)).then(function (x) {
+            if (x && x.ok === false) stat.textContent = '定位失败：' + (x.error || '');
+          });
+          else stat.textContent = '这个版本没有定位通道';
+        });
+        tools.appendChild(bDeep); tools.appendChild(bReload2); tools.appendChild(bOpenDir);
+        pane.appendChild(tools);
+
+        var wrap = el('div', 'kp-tree');
+        wrap.innerHTML = kpTreeHtml(r.children, 1);
+        pane.appendChild(wrap);
+      }, function (e2) {
+        pane.innerHTML = '';
+        pane.appendChild(el('div', 'kflow-load', '读不动：' + String((e2 && e2.message) || e2)));
+      });
+    }
+
+    // ⓑ 结构图（graphify）
+    function paintMap() {
+      pane.innerHTML = '';
+      pane.appendChild(el('div', 'kflow-load', '正在看这个项目画过没有…'));
+      Promise.resolve(APP.projects.info(kpKeyOf(key || title))).then(function (r) {
+        pane.innerHTML = '';
+        var meta = (r && r.meta) || null;
+        var has = !!(meta && (meta.tree || meta.html) && meta.builtAt);
+        var box2 = el('div', 'kp-map');
+        if (!has) {
+          box2.appendChild(el('div', 'kflow-load', '这个项目还没画过结构图。画一张会花十几秒到几分钟（纯本地 AST，不联网、不用 key）。'));
+        } else {
+          var m1 = el('div', 'kflow-meta');
+          [['节点', String(meta.nodes || 0)], ['关系', String(meta.edges || 0)],
+           ['代码文件', String(meta.files || 0)], ['画于', fmtAt(meta.builtAt)],
+           ['用时', fmtMs(meta.ms || 0)]].forEach(function (kv) {
+            var c = el('span', 'kflow-chip');
+            c.appendChild(el('b', '', kv[0] + ' '));
+            c.appendChild(document.createTextNode(kv[1]));
+            m1.appendChild(c);
+          });
+          box2.appendChild(m1);
+          if (meta.stale) box2.appendChild(el('div', 'kp-warn', '⚠ 源码比这张图新，建议重画一次'));
+          if (meta.err) box2.appendChild(el('div', 'kp-warn', '⚠ ' + String(meta.err).slice(0, 200)));
+        }
+        var tools = el('div', 'kp-tools');
+        if (has) {
+          var bT = el('button', 'kflow-tab', '🕸 打开结构树');
+          bT.type = 'button';
+          bT.title = 'tree.html：文件 → 函数/类，一层层展开（D3 可折叠树，离线可用）';
+          bT.addEventListener('click', function () {
+            APP.projects.open(kpKeyOf(key || title), 'tree').then(function (x) {
+              if (x && x.ok === false) stat.textContent = '打不开：' + (x.err || '');
+            });
+          });
+          var bG = el('button', 'kflow-tab', '🌐 打开关系图');
+          bG.type = 'button';
+          bG.title = 'graph.html：谁引用谁的关系网，可按社区上色、能搜节点';
+          bG.addEventListener('click', function () {
+            APP.projects.open(kpKeyOf(key || title), 'graph').then(function (x) {
+              if (x && x.ok === false) stat.textContent = '打不开：' + (x.err || '');
+            });
+          });
+          tools.appendChild(bT); tools.appendChild(bG);
+        }
+        var bBuild = el('button', 'kflow-tab', has ? '⟳ 重画' : '⚙ 现在画一张');
+        bBuild.type = 'button';
+        bBuild.addEventListener('click', function () {
+          if (bBuild.disabled) return;
+          bBuild.disabled = true;
+          bBuild.classList.add('kp-busy');
+          var tip = el('div', 'kflow-load', '正在抽图…（大项目要几分钟，别关这个窗口；这一步只用本地 AST，不花 token）');
+          box2.insertBefore(tip, tools);
+          APP.projects.build({ path: dir, name: String(title || '') }).then(function (x) {
+            if (tip.parentNode) tip.remove();
+            bBuild.disabled = false;
+            bBuild.classList.remove('kp-busy');
+            if (x && x.ok) { stat.textContent = '画好了：' + ((x.meta && x.meta.nodes) || 0) + ' 节点'; paintMap(); }
+            else stat.textContent = '画失败：' + ((x && (x.err || x.meta && x.meta.err)) || '未知原因');
+          }, function (e2) {
+            if (tip.parentNode) tip.remove();
+            bBuild.disabled = false;
+            bBuild.classList.remove('kp-busy');
+            stat.textContent = '画失败：' + String((e2 && e2.message) || e2);
+          });
+        });
+        tools.appendChild(bBuild);
+        box2.appendChild(tools);
+        box2.appendChild(el('div', 'kflow-path', '图存在 外壳\\data\\project-maps\\' + ((meta && meta.key) || '') + '\\（不会往项目里写文件）'));
+        pane.appendChild(box2);
+      });
+    }
+
+    if (tab === 'map') paintMap(); else paintTree(3);
+  }
+
   function openSessionPane(sid, title, tab) {
     var old = body.querySelector('.kflow');
     if (old) old.remove();
@@ -19281,6 +19491,36 @@ renderers.neuron = (body, meta, head) => {
       });
       row2.appendChild(bF); row2.appendChild(bM);
       detail.appendChild(row2);
+    }
+    // 工作区节点：这个项目的结构怎么看（2026-11-26，使用者 m04794）
+    if (n.kind === 'workspace' && n.path) {
+      var row3 = el('div', 'kneu-drow');
+      var wsTitle = String(n.label || n.title || '');
+      var bStruct = el('button', 'kneu-btn kneu-go', '🗂 项目结构');
+      bStruct.type = 'button';
+      bStruct.title = '这个工作区的目录结构（跳过 node_modules/.git/构建产物）';
+      bStruct.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openProjectPane(String(n.path || ''), wsTitle, n.wsId || wsTitle, 'tree');
+      });
+      var bGraph = el('button', 'kneu-btn kneu-go', '🕸 结构图');
+      bGraph.type = 'button';
+      bGraph.title = '用 graphify 给这个项目画的结构图（离线 html，点开看谁引用谁）';
+      bGraph.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openProjectPane(String(n.path || ''), wsTitle, n.wsId || wsTitle, 'map');
+      });
+      row3.appendChild(bStruct); row3.appendChild(bGraph);
+      detail.appendChild(row3);
+      // 画过没有？异步补一个数上去（不阻塞详情面板）
+      var PR = (window.app && window.app.projects) || null;
+      if (PR && PR.info) {
+        Promise.resolve(PR.info(String(n.wsId || wsTitle))).then(function (r) {
+          if (!r || !r.ok || !r.meta || !r.meta.builtAt) return;
+          if (!bGraph.parentNode) return;
+          bGraph.textContent = '🕸 结构图 · ' + (r.meta.nodes || 0) + ' 节点' + (r.meta.stale ? '（旧）' : '');
+        }, function () { /* 没图就算了，按钮本来就能现画 */ });
+      }
     }
     detail.classList.add('on');
   }

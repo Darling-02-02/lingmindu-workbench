@@ -1551,6 +1551,14 @@ async function loadScenario(id) {
       + '（隐式列会按内容宽排、比例全乱）⇒ 已按 ' + gridCols + ' 列渲染。要么把 cols 调到 ' + gridCols + '，要么改面板坐标。');
   }
   grid.style.gridTemplateColumns = gridCols === 4 ? '' : 'repeat(' + gridCols + ',1fr)';
+  // 行高：默认走 styles.css 的 `#grid { grid-auto-rows: minmax(88px,1fr) }` —— 那次改动是为了
+  // 「面板多到挤爆时别把每行压扁，宁可在网格内部滚动」。但像「运营后台」这种**本来就是按屏设计**
+  // （2×2 四个后台、不需要滚）的场景，12 行 × 88px = 1056px 远超窗口 714px ⇒ 四个面板全被推到
+  // 视口外面，要滚轮才能看到下面两个（用户 2026-11-26：「这些分区的窗口大小不适配」）。
+  // 所以给场景一个显式开关 `"fitRows": true`：把行高换回 minmax(0,1fr)，行数不变、均分可用高度，
+  // 窗口多大就铺多大，不留白也不滚动。没写这个字段的场景行为完全不变（保持 88px 地板 + 内部滚动）。
+  grid.style.gridAutoRows = sc.fitRows ? 'minmax(0, 1fr)' : '';
+  grid.style.overflowY = sc.fitRows ? 'hidden' : '';
   // 该场景正在独立窗口里跑 → 默认不在这里再渲染一份（两份定时器 / 两份 AI 界面会互相打架）
   if (!soloSceneId && detachedScenes.has(id) && forceLocalScene !== id) {
     grid.innerHTML = '';

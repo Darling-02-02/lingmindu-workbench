@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const rawArg = process.argv[2];
 const expr = rawArg && rawArg.startsWith('@') ? fs.readFileSync(rawArg.slice(1), 'utf8') : rawArg;
 async function pickPort() {
-  for (const p of [9225, 9224, 9223, 9222]) {
+  for (const p of [9226, 9225, 9224, 9223, 9222]) {
     try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
   }
   return 9224;

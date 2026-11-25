@@ -399,6 +399,17 @@ contextBridge.exposeInMainWorld('app', {
     save: (panelId, panelTitle, data) => ipcRenderer.invoke('capture:save', panelId, panelTitle, data),
     list: () => ipcRenderer.invoke('capture:list')
   },
+  // ---- 项目结构 / 结构图（2026-11-26，graphify 集成） ----
+  // 主进程实现：main.js 的 projects:* 五个 handle。产物缓存在 外壳\data\project-maps\<工作区>\，
+  // 不往用户项目里写任何文件。maps() 是清单（有没有图/节点数/是否过时），
+  // build() 现画一张（十几秒到几分钟），open() 用系统浏览器打开 tree.html 或 graph.html。
+  projects: {
+    maps: () => ipcRenderer.invoke('projects:maps'),
+    build: (target) => ipcRenderer.invoke('projects:map-build', target),
+    open: (key, kind) => ipcRenderer.invoke('projects:map-open', key, kind),
+    info: (key) => ipcRenderer.invoke('projects:map-info', key),
+    tree: (dir, opt) => ipcRenderer.invoke('projects:tree', dir, opt)
+  },
   // 工具清单（2026-10-21）：顶栏 🛠 面板读 data\工具清单.json
   toolsCatalog: () => ipcRenderer.invoke('tools:catalog'),
   // 窗口控制（自定义标题栏）

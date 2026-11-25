@@ -5,6 +5,7 @@
   "layout": "grid",
   "theme": "dark",
   "cols": 4,
+  "fitRows": true,
   "panels": [
     {
       "id": "rg-console",

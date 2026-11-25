@@ -2,7 +2,7 @@
 // 用法: node perf-ab.mjs on|off [port]
 const mode = process.argv[2] || 'on';
 async function pickPort() {
-  for (const p of [9225, 9224, 9223, 9222]) {
+  for (const p of [9226, 9225, 9224, 9223, 9222]) {
     try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
   }
   return 9224;

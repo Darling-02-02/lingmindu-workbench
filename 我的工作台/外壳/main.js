@@ -2444,6 +2444,179 @@ ipcMain.handle('capture:list', () => {
   }
 });
 
+// ---- 项目结构 / 结构图（graphify 集成，2026-11-26）----
+// 来自使用者 m04794：神经元点进某个工作区要能看到这个项目的结构；并且用 graphify
+// （https://github.com/Graphify-Labs/graphify.git）给每个工作区自动出一张结构图，
+// 这件事要固定在https://github.com/Graphify-Labs/graphify.git这个工作台里，能自己重建。
+//
+// 分工：真正的活都在 工具\项目结构图.mjs（--list / --ws / --all --stale），产物缓存到
+// 外壳\data\project-maps\<工作区>\（graph.html 关系图 + tree.html 可折叠结构树 + graph.json）。
+// 主进程只做三件事：给渲染层递清单、点按钮时去调脚本、把 html 交给系统浏览器打开。
+// 注意：**不往用户项目里写 graphify-out/**（那是人家的 git 仓库，会脏 working tree）。
+const MAP_SCRIPT = path.join(__dirname, '..', '工具', '项目结构图.mjs');
+const MAP_ROOT_DIR = path.join(__dirname, 'data', 'project-maps');
+const MAP_LAST_AUTO = path.join(MAP_ROOT_DIR, '.last-auto');
+const MAP_SKIP_DIR = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'target', '.next', '.nuxt',
+  '__pycache__', '.venv', 'venv', 'env', '.tox', '.mypy_cache', '.pytest_cache', 'coverage',
+  '.idea', '.vscode', 'graphify-out', '.gradle', '.cargo', 'Pods', 'DerivedData',
+]);
+
+// 异步跑脚本：graphify 一次十几秒到几分钟，spawnSync 会把整个界面冻住（点哪都没反应）
+function runMapScript(args, opt) {
+  opt = opt || {};
+  return new Promise((resolve) => {
+    let out = '', errText = '', done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    let child;
+    try {
+      child = spawn(resolveNodeExe(), [MAP_SCRIPT].concat(args.map(String)), {
+        cwd: path.join(__dirname, '..'),
+        windowsHide: true,
+        env: process.env,
+      });
+    } catch (err) {
+      return finish({ ok: false, err: String((err && err.message) || err), out: '' });
+    }
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (e) { /* 已经退了 */ }
+      finish({ ok: false, timeout: true, out: out, err: '跑太久被掐了（30 分钟）' });
+    }, opt.timeout || 30 * 60 * 1000);
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { errText += d.toString(); });
+    child.on('error', (err) => { clearTimeout(timer); finish({ ok: false, err: String(err.message) }); });
+    child.on('close', (code) => { clearTimeout(timer); finish({ ok: code === 0, code: code, out: out, err: errText }); });
+  });
+}
+
+// 脚本的 stdout 前面可能有 `[结构图] …` 日志行，真正的 JSON 从第一个 `{` 开始
+function jsonTailOf(text) {
+  const s = String(text || '');
+  const i = s.indexOf('{');
+  if (i < 0) return null;
+  try { return JSON.parse(s.slice(i)); } catch (e) { return null; }
+}
+
+// 清单：每个工作区 有没有图 / 多少节点 / 是不是过时了
+ipcMain.handle('projects:maps', async () => {
+  const r = await runMapScript(['--list', '--json'], { timeout: 240000 });
+  const j = jsonTailOf(r.out);
+  if (j) return j;
+  return { ok: false, maps: [], dir: MAP_ROOT_DIR, err: (r.err || r.out || '读不到清单').slice(-400) };
+});
+
+// 画一张：target = { key }（按工作区缓存名/标题/id 前 8 位）或 { path, name }（任意目录）
+ipcMain.handle('projects:map-build', async (e, target) => {
+  const t = target || {};
+  const args = [];
+  if (t.path) {
+    args.push('--path', String(t.path));
+    if (t.name) args.push('--name', String(t.name));
+  } else if (t.key || t.title) {
+    args.push('--ws', String(t.key || t.title));
+  } else {
+    return { ok: false, err: '要画哪个项目？' };
+  }
+  args.push('--force');
+  const r = await runMapScript(args);
+  const meta = jsonTailOf(r.out);
+  if (meta && meta.key) {
+    return { ok: !meta.err, meta: meta, log: String(r.out || '').slice(-1200), err: meta.err || '' };
+  }
+  return { ok: false, err: (r.err || r.out || '画失败').slice(-400) };
+});
+
+// 找某个项目的缓存目录：不靠"salt 拼目录名"猜，而是扫所有 meta.json 按 key/标题/id/路径对，
+// 因为 dir 名是脚本用 keyOf() 生成的（下划线规则），跟 main.js 的 safeName()（连字符规则）不一样。
+function findMapDir(any) {
+  const q = String(any || '').trim();
+  if (!q) return { dir: '', meta: null };
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(MAP_ROOT_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.charAt(0) !== '_')
+      .map((d) => path.join(MAP_ROOT_DIR, d.name));
+  } catch (err) { return { dir: '', meta: null }; }
+  let loose = null;
+  for (const d of dirs) {
+    let m = null;
+    try { m = JSON.parse(fs.readFileSync(path.join(d, 'meta.json'), 'utf8')); } catch (err) { continue; }
+    if (m.key === q || m.title === q || m.id === q || m.path === q) return { dir: d, meta: m };
+    if (!loose && (String(m.title || '').indexOf(q) >= 0 || String(m.id || '').indexOf(q) === 0)) loose = { dir: d, meta: m };
+  }
+  return loose || { dir: '', meta: null };
+}
+
+// 打开图：kind = 'tree'（结构树，默认）| 'graph'（关系网）
+ipcMain.handle('projects:map-open', async (e, any, kind) => {
+  const hit = findMapDir(any);
+  const meta = hit.meta;
+  const dir = hit.dir;
+  const name = (kind === 'graph') ? ((meta && meta.html) || 'graph.html') : ((meta && meta.tree) || 'tree.html');
+  const abs = dir ? path.join(dir, name) : '';
+  if (!abs || !fs.existsSync(abs)) return { ok: false, err: '这张图还没生成（先画一次）', meta: meta, file: abs };
+  const bad = await shell.openPath(abs);
+  return bad ? { ok: false, err: bad, file: abs, meta: meta } : { ok: true, file: abs, meta: meta };
+});
+
+// 读一份 meta（渲染层想知道"哪年哪月画的、多少节点"时用）
+ipcMain.handle('projects:map-info', (e, any) => {
+  const hit = findMapDir(any);
+  if (!hit.meta) return { ok: false, err: '还没画过', dir: hit.dir };
+  return { ok: true, meta: hit.meta, dir: hit.dir };
+});
+
+// 目录树：给神经元「项目结构」用（自己走 fs，不依赖 graphify，所以任何目录、没装 python 也能看）
+ipcMain.handle('projects:tree', (e, dir, opt) => {
+  const root = String(dir || '');
+  if (!root || !fs.existsSync(root)) return { ok: false, err: '目录不存在', root: root, children: [] };
+  const maxDepth = Math.min(6, Math.max(1, Number((opt && opt.depth) || 3)));
+  const maxItems = Math.min(20000, Math.max(200, Number((opt && opt.max) || 4000)));
+  let n = 0, truncated = false;
+  const walk = (d, depth) => {
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (err) { return []; }
+    // 目录在前、同类按名字排：这样结构和资源管理器里的顺序一致，一眼能对上
+    ents.sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name, 'zh'));
+    const out = [];
+    for (const en of ents) {
+      if (n >= maxItems) { truncated = true; break; }
+      if (MAP_SKIP_DIR.has(en.name)) continue;
+      const p = path.join(d, en.name);
+      n++;
+      if (en.isDirectory()) {
+        out.push({ name: en.name, dir: true, children: (depth < maxDepth) ? walk(p, depth + 1) : [], more: depth >= maxDepth });
+      } else {
+        let size = 0;
+        try { size = fs.statSync(p).size; } catch (err) { /* 权限不给就算了 */ }
+        out.push({ name: en.name, dir: false, size: size });
+      }
+    }
+    return out;
+  };
+  const children = walk(root, 1);
+  return { ok: true, root: root, name: path.basename(root), depth: maxDepth, count: n, truncated: truncated, children: children };
+});
+
+// 自动重建：启动后一分半跑一次 --all --stale，12 小时内只跑一次（写 .last-auto）
+// 之所以延迟：先让界面和引擎起来，别跟启动阶段抢磁盘 IO
+async function autoBuildMaps() {
+  try {
+    if (!fs.existsSync(MAP_ROOT_DIR)) fs.mkdirSync(MAP_ROOT_DIR, { recursive: true });
+    let last = 0;
+    try { last = Number(fs.readFileSync(MAP_LAST_AUTO, 'utf8').trim()) || 0; } catch (err) { /* 第一次 */ }
+    if (last && Date.now() - last < 12 * 3600 * 1000) return;
+    const r = await runMapScript(['--all', '--stale']);
+    try { fs.writeFileSync(MAP_LAST_AUTO, String(Date.now()), 'utf8'); } catch (err) { /* ignore */ }
+    try {
+      fs.appendFileSync(path.join(MAP_ROOT_DIR, 'auto.log'),
+        '\n===== ' + new Date().toLocaleString('sv-SE') + ' =====\n' + String(r.out || '').slice(-4000)
+        + (r.err ? '\n[stderr] ' + String(r.err).slice(-1500) : '') + '\n', 'utf8');
+    } catch (err) { /* ignore */ }
+  } catch (err) { /* 自动出图失败不该影响工作台使用 */ }
+}
+setTimeout(autoBuildMaps, 90 * 1000);
+
 // ---- 程序开发场景：把项目里的 H5 用「手机尺寸独立窗口」打开（400×830，独立持久会话 → 登录能记住）----
 // 场景 json 的 code-urls 面板里给条目加 "phone": true 就会出现 📱 按钮；换项目只改 json。
 ipcMain.handle('code:phone-window', (e, url, title) => {

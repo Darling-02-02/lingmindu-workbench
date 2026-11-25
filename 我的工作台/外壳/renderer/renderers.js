@@ -12006,6 +12006,14 @@ var SCENARIO_ICONS = {
       '<circle cx="8" cy="8" r="5.4" stroke="#8fb4ff" stroke-width="1.7" opacity=".35"/>' +
       '<path d="M8 2.6a5.4 5.4 0 0 1 5.2 4" stroke="#f0a35e" stroke-width="1.7" stroke-linecap="round"/>' +
       '<circle cx="8" cy="8" r="1.7" fill="#8fb4ff"/></svg>',
+    // rag（RAG 检索，2026-11-26 从「运营后台」拆成独立场景）：放大镜 + 镜片里三段命中片段。
+    // 为什么不是 emoji：标签栏 emoji 是 14px/opacity .85 那套样式，和旁边几个 SVG 图标摆一起会显得糊；
+    // 与 renderer.js 保持一致（那边是 ICONS['rag']，冷启动时先顶上，本文件 ⟳ 后覆盖）。
+    'rag':
+      '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+      '<circle cx="7.1" cy="7.1" r="4.35" stroke="#8fb4ff" stroke-width="1.6"/>' +
+      '<path d="M10.5 10.5 14.1 14.1" stroke="#8fb4ff" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<path d="M5 5.6h4.2M5 7.1h3.2M5 8.6h2.3" stroke="#f0a35e" stroke-width=".95" stroke-linecap="round"/></svg>',
 };
 // ============ 电脑清理场景：磁盘分区面板（C / D / E / F 四个分区的大小）============
 // 数据：宿主 IPC app.sys.disks()（main.js 用 fs.statfsSync 只读算总量/剩余）。

@@ -1744,6 +1744,7 @@ async function init() {
   const NEURON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.7 4.5 8 2.9l4.4 1.7M3 8.4l.7-3.9M8 2.9l.4 5.2M12.4 4.6 8.4 8.1M8.4 8.1l3.8 3.4M8.4 8.1l-3.8 4.1M3 8.4l5.4-.3" stroke="#8fb4ff" stroke-width=".85" stroke-linecap="round" opacity=".6"/><circle cx="3.7" cy="4.5" r="1.45" fill="#8fb4ff"/><circle cx="8" cy="2.9" r="1.15" fill="#8fb4ff" opacity=".85"/><circle cx="12.4" cy="4.6" r="1.25" fill="#8fb4ff"/><circle cx="3" cy="8.4" r="1.05" fill="#8fb4ff" opacity=".8"/><circle cx="8.4" cy="8.1" r="1.85" fill="#f0a35e"/><circle cx="12.2" cy="11.5" r="1.15" fill="#8fb4ff" opacity=".85"/><circle cx="4.6" cy="12.2" r="1.05" fill="#8fb4ff" opacity=".8"/></svg>';
   const ICONS = {
   'bilibili': 'assets/bilibili-icon.png',
+  'rag': '🔍',   // RAG 检索（2026-11-26 独立场景）；真图标是 renderers.js 的 SCENARIO_ICONS['rag']（SVG），这里只是冷启动兜底
     'douyin': 'assets/douyin-icon.png',   // 2026-10-26 宿主新建「刷抖音」场景（抖音官方 favicon）   // 2026-10-19 宿主新建「B站」场景（官方 favicon.svg）
     'harness': 'assets/deepseek-whale.png',
     'oa-ops': 'data:image/svg+xml;utf8,' + encodeURIComponent(SERVER_SVG),  // 服务器图标（原为云朵 ☁️）

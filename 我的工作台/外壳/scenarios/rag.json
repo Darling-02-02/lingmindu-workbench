@@ -1,0 +1,21 @@
+{
+  "id": "rag",
+  "name": "RAG 检索",
+  "description": "把自己的 RAG 库接到工作台。两种接法：① HTTP —— 填服务地址 + 可选 token，走 /query 和 /health；② 命令 —— 填一行命令（比如 python C:\\rag\\q.py），脚本从 stdin 收 JSON、往 stdout 吐 JSON。返回只认 hits[] 里的 text / score / source，字段名兼容 hits/results/matches/documents/chunks/data/items/context。配置存 外壳\\data\\rag.json（不进仓库），模板见 说明\\rag.example.json。面板 id 用 rg-console（不要再用 pf-rag：那是它当初挂在「运营后台」里的 id，两个场景同时存在时 DOM 会重名、querySelector 会抓错那一个）。",
+  "layout": "grid",
+  "theme": "dark",
+  "cols": 4,
+  "panels": [
+    {
+      "id": "rg-console",
+      "title": "RAG 检索",
+      "sub": "填服务地址或一行命令就能接自己的库 · 配置存 外壳\\data\\rag.json",
+      "type": "rag-console",
+      "col": 1,
+      "row": 1,
+      "w": 4,
+      "h": 7
+    }
+  ],
+  "first": false
+}

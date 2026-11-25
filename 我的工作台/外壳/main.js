@@ -2150,6 +2150,187 @@ ipcMain.handle('site:probe', (e, url) => {
     } catch (ex) { done(false, 0); }
   });
 });
+// ==================== RAG 接口（预留 · 2026-11-25）====================
+// 以后要把自己的 RAG 库接进来，只要满足下面任意一种，工作台这边**不用改代码**：
+//
+//   ① HTTP 服务（最省事）
+//      GET  {baseUrl}{healthPath}   → 2xx 就算活着，返回体随意
+//      POST {baseUrl}{queryPath}    → 请求体 {query, topK, collection, ...extra}
+//                                     响应体 {hits:[{text, score, source, ...}]}
+//      鉴权：apiKey 非空就以 `Authorization: Bearer <apiKey>` 发出去
+//
+//   ② 本地命令（不想起服务也行）
+//      cmd 写一行命令，工作台把 {"query":…,"topK":…,"collection":…} 塞进 stdin，
+//      从 stdout 读同样形状的 JSON。接 Ollama / LlamaIndex / 自建向量库都能这么绕过去。
+//
+// hits[] 里除 text 之外，score / source / title / url 有几个显示几个，多的字段忽略。
+const RAG_CFG_FILE = path.join(__dirname, 'data', 'rag.json');
+const RAG_DEFAULT = {
+  baseUrl: '',
+  apiKey: '',
+  queryPath: '/query',
+  healthPath: '/health',
+  topK: 8,
+  collection: '',
+  timeoutMs: 20000,
+  cmd: '',
+  note: '接自己的 RAG 库：填 baseUrl（HTTP 服务）或 cmd（本地命令），两种都支持。改完在 RAG 面板点「体检」。'
+};
+function ragClampNum(v, lo, hi, dft) {
+  const n = Number(v);
+  if (!isFinite(n)) return dft;
+  return Math.max(lo, Math.min(hi, n));
+}
+function ragConfig() {
+  let cur = {};
+  try { cur = JSON.parse(fs.readFileSync(RAG_CFG_FILE, 'utf8')); } catch (e) { cur = {}; }
+  const out = Object.assign({}, RAG_DEFAULT, (cur && typeof cur === 'object') ? cur : {});
+  out.topK = ragClampNum(out.topK, 1, 50, 8);
+  out.timeoutMs = ragClampNum(out.timeoutMs, 2000, 120000, 20000);
+  ['baseUrl', 'apiKey', 'queryPath', 'healthPath', 'collection', 'cmd', 'note'].forEach(function (k) {
+    out[k] = String(out[k] == null ? '' : out[k]);
+  });
+  out.configured = !!(out.baseUrl || out.cmd);
+  return out;
+}
+function ragSave(patch) {
+  const next = Object.assign({}, ragConfig(), (patch && typeof patch === 'object') ? patch : {});
+  const clean = {};
+  Object.keys(RAG_DEFAULT).forEach(function (k) { clean[k] = next[k]; });
+  clean.topK = ragClampNum(clean.topK, 1, 50, 8);
+  clean.timeoutMs = ragClampNum(clean.timeoutMs, 2000, 120000, 20000);
+  ['baseUrl', 'apiKey', 'queryPath', 'healthPath', 'collection', 'cmd', 'note'].forEach(function (k) {
+    clean[k] = String(clean[k] == null ? '' : clean[k]).trim();
+  });
+  try {
+    fs.mkdirSync(path.dirname(RAG_CFG_FILE), { recursive: true });
+    fs.writeFileSync(RAG_CFG_FILE, JSON.stringify(clean, null, 2), 'utf8');
+  } catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
+  return { ok: true, config: ragConfig() };
+}
+// 通用 JSON 请求（主进程发 ⇒ 不受渲染层跨域限制）
+function httpJson(url, opt) {
+  const o = opt || {};
+  return new Promise(function (resolve) {
+    let u = null;
+    try { u = new URL(url); } catch (e) { return resolve({ status: 0, error: '地址不合法：' + url }); }
+    let mod = null;
+    try { mod = u.protocol === 'https:' ? require('https') : require('http'); }
+    catch (e) { return resolve({ status: 0, error: String((e && e.message) || e) }); }
+    const body = (o.body == null) ? null : (typeof o.body === 'string' ? o.body : JSON.stringify(o.body));
+    const headers = Object.assign({ Accept: 'application/json' }, o.headers || {});
+    if (body) {
+      headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(body);
+    }
+    const t0 = Date.now();
+    const req = mod.request(u, { method: o.method || (body ? 'POST' : 'GET'), headers: headers, timeout: o.timeoutMs || 20000 }, function (res) {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', function (c) { if (buf.length < 4 * 1024 * 1024) buf += c; });
+      res.on('end', function () {
+        let json = null;
+        try { json = JSON.parse(buf); } catch (e) { json = null; }
+        resolve({ status: res.statusCode || 0, json: json, text: buf, ms: Date.now() - t0 });
+      });
+    });
+    req.on('error', function (e) { resolve({ status: 0, error: String((e && e.message) || e), ms: Date.now() - t0 }); });
+    req.on('timeout', function () { try { req.destroy(); } catch (e) { /* ignore */ } resolve({ status: 0, error: '超时', ms: Date.now() - t0 }); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+function ragJoin(base, p) {
+  const b = String(base || '').replace(/\/+$/, '');
+  const q = String(p || '').trim();
+  if (!q) return b;
+  return b + (q.charAt(0) === '/' ? q : ('/' + q));
+}
+// 不管对方的字段叫什么，都归成 {text, score, source}
+function ragHits(json) {
+  let arr = null;
+  if (Array.isArray(json)) arr = json;
+  else if (json && typeof json === 'object') {
+    ['hits', 'results', 'matches', 'documents', 'chunks', 'data', 'items', 'context'].some(function (k) {
+      if (Array.isArray(json[k])) { arr = json[k]; return true; }
+      if (json[k] && Array.isArray(json[k].hits)) { arr = json[k].hits; return true; }
+      return false;
+    });
+  }
+  if (!arr) return [];
+  return arr.slice(0, 50).map(function (it) {
+    if (it == null) return null;
+    const o = (typeof it === 'object') ? it : { text: String(it) };
+    const meta = (o.metadata && typeof o.metadata === 'object') ? o.metadata : {};
+    const text = String(o.text || o.content || o.chunk || o.pageContent || o.page_content || o.document || meta.text || '');
+    let score = o.score;
+    if (score == null) score = o.similarity;
+    if (score == null) score = o.relevance;
+    if (score == null) score = o.distance;
+    const source = String(o.source || o.title || o.url || o.file || o.path || meta.source || meta.title || meta.url || '');
+    return { text: text, score: (typeof score === 'number') ? score : null, source: source };
+  }).filter(function (x) { return x && (x.text || x.source); });
+}
+async function ragHealth() {
+  const cfg = ragConfig();
+  if (!cfg.configured) return { ok: false, err: '还没配置', config: cfg };
+  if (cfg.cmd) {
+    const r = ragRunCmd(cfg, { ping: true, query: '', topK: 1, collection: cfg.collection });
+    return { ok: !!r.ok, via: 'cmd', ms: r.ms, status: r.ok ? 200 : 0, err: r.err || '', text: r.text || '', config: cfg };
+  }
+  const url = ragJoin(cfg.baseUrl, cfg.healthPath);
+  const headers = cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {};
+  const res = await httpJson(url, { method: 'GET', headers: headers, timeoutMs: Math.min(cfg.timeoutMs, 8000) });
+  const ok = res.status >= 200 && res.status < 400;
+  return { ok: ok, via: 'http', url: url, status: res.status, ms: res.ms, err: res.error || '', text: String(res.text || '').slice(0, 300), config: cfg };
+}
+// 本地命令模式：stdin 进 JSON，stdout 出 JSON
+function ragRunCmd(cfg, payload) {
+  const t0 = Date.now();
+  try {
+    const r = spawnSync('cmd.exe', ['/c', cfg.cmd], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+      timeout: cfg.timeoutMs,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024
+    });
+    const out = String((r && r.stdout) || '');
+    let json = null;
+    try { json = JSON.parse(out); } catch (e) { json = null; }
+    return { ok: !!(r && r.status === 0) && !!json, json: json, text: out.slice(0, 400), err: (r && r.status !== 0) ? String((r.stderr || '').slice(0, 300) || ('exit ' + r.status)) : (json ? '' : 'stdout 不是 JSON'), ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, json: null, text: '', err: String((e && e.message) || e), ms: Date.now() - t0 };
+  }
+}
+async function ragQuery(query, opt) {
+  const cfg = ragConfig();
+  const q = String(query == null ? '' : query).trim();
+  if (!q) return { ok: false, err: '问题是空的' };
+  if (!cfg.configured) return { ok: false, err: '还没配置 RAG（面板里点「⚙ 设置」填 baseUrl 或 cmd）', config: cfg };
+  const o = opt || {};
+  const topK = ragClampNum(o.topK, 1, 50, cfg.topK);
+  const collection = String(o.collection == null ? cfg.collection : o.collection);
+  const payload = { query: q, topK: topK, collection: collection };
+  if (cfg.cmd) {
+    const r = ragRunCmd(cfg, payload);
+    if (!r.ok) return { ok: false, via: 'cmd', err: r.err || '命令没跑通', text: r.text, ms: r.ms, config: cfg };
+    return { ok: true, via: 'cmd', query: q, topK: topK, collection: collection, hits: ragHits(r.json), raw: r.json, ms: r.ms };
+  }
+  const url = ragJoin(cfg.baseUrl, cfg.queryPath);
+  const headers = cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {};
+  const res = await httpJson(url, { method: 'POST', headers: headers, body: payload, timeoutMs: cfg.timeoutMs });
+  if (!res.status) return { ok: false, via: 'http', url: url, err: res.error || '请求失败', ms: res.ms, config: cfg };
+  if (res.status < 200 || res.status >= 300) {
+    return { ok: false, via: 'http', url: url, status: res.status, err: 'HTTP ' + res.status, text: String(res.text || '').slice(0, 400), ms: res.ms, config: cfg };
+  }
+  return { ok: true, via: 'http', url: url, status: res.status, query: q, topK: topK, collection: collection, hits: ragHits(res.json), raw: res.json, ms: res.ms };
+}
+ipcMain.handle('rag:config', () => { const c = ragConfig(); return { ok: true, config: c, file: RAG_CFG_FILE }; });
+ipcMain.handle('rag:save', (e, patch) => ragSave(patch));
+ipcMain.handle('rag:health', () => ragHealth());
+ipcMain.handle('rag:query', (e, q, opt) => ragQuery(q, opt));
+
 // ---- 程序开发场景：把项目里的 H5 用「手机尺寸独立窗口」打开（400×830，独立持久会话 → 登录能记住）----
 // 场景 json 的 code-urls 面板里给条目加 "phone": true 就会出现 📱 按钮；换项目只改 json。
 ipcMain.handle('code:phone-window', (e, url, title) => {

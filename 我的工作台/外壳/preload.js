@@ -381,6 +381,16 @@ contextBridge.exposeInMainWorld('app', {
     // 最近打开的文件夹（读 Windows「最近使用」记录，只读；2026-10-16 加）
     recentFolders: () => ipcRenderer.invoke('topbar:recent-folders')
   },
+  // ---- RAG 检索（2026-11-25 预留）----
+  // 主进程实现：main.js 的 rag:config / rag:save / rag:health / rag:query。
+  // 配置在 外壳\data\rag.json；只要对方实现 POST {queryPath} → {hits:[…]}（或给一行 cmd）就能接上，
+  // 以后换 RAG 库不用动工作台代码。
+  rag: {
+    config: () => ipcRenderer.invoke('rag:config'),
+    save: (patch) => ipcRenderer.invoke('rag:save', patch),
+    health: () => ipcRenderer.invoke('rag:health'),
+    query: (q, opt) => ipcRenderer.invoke('rag:query', q, opt)
+  },
   // 工具清单（2026-10-21）：顶栏 🛠 面板读 data\工具清单.json
   toolsCatalog: () => ipcRenderer.invoke('tools:catalog'),
   // 窗口控制（自定义标题栏）

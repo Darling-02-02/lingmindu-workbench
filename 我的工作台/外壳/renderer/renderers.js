@@ -19275,6 +19275,192 @@ renderers.neuron = (body, meta, head) => {
 //   不做的事：不自己算"今天该出现哪些"以外的东西，不写 md，不碰引擎会话（那是记忆同步的活）。
 //   面板只做日常动作：看今天、勾一下、当场加一条、删一条；--week / --seed / 批量走命令行。
 // ══════════════════════════════════════════════════════════════════════════════
+// ==================== RAG 检索面板（2026-11-25 预留）====================
+// 接自己的 RAG 库时，工作台只认两件事（主进程 main.js 那半边已经写好了）：
+//   ① POST {baseUrl}{queryPath}  请求 {query,topK,collection} → 响应 {hits:[{text,score,source}]}
+//   ② 或者 cmd 写一行命令：stdin 收同样 JSON，stdout 回同样 JSON
+// 这个面板只干"把问题发出去、把命中的片段摊开"，换库不用动它。
+renderers['rag-console'] = (body, meta) => {
+  body.classList.add('rg');
+  const A = (window.app && window.app.rag) ? window.app.rag : null;
+
+  const head = el('div', 'rg-head');
+  const dot = el('span', 'rg-dot');
+  const status = el('div', 'rg-status', '正在读配置…');
+  const tools = el('div', 'rg-tools');
+  const bPing = el('button', 'rg-btn', '⟳ 体检');
+  bPing.title = '探一下 RAG 服务活着没（GET {healthPath}）';
+  const bCfg = el('button', 'rg-btn', '⚙ 设置');
+  tools.appendChild(bPing);
+  tools.appendChild(bCfg);
+  head.appendChild(dot);
+  head.appendChild(status);
+  head.appendChild(tools);
+  body.appendChild(head);
+
+  // ---- 设置区（默认收起）----
+  const form = el('div', 'rg-form');
+  form.style.display = 'none';
+  function field(label, cls, ph, tip) {
+    const box = el('div', 'rg-f');
+    const lb = el('div', 'rg-fl', label);
+    const ip = el('input', 'rg-input ' + cls);
+    ip.placeholder = ph || '';
+    if (tip) ip.title = tip;
+    box.appendChild(lb);
+    box.appendChild(ip);
+    form.appendChild(box);
+    return ip;
+  }
+  const fBase = field('服务地址 baseUrl', 'rg-f-base', 'http://127.0.0.1:8080（留空则走下面的命令）');
+  const fKey = field('apiKey', 'rg-f-key', '可空；填了就发 Authorization: Bearer …');
+  const fQP = field('查询路径', 'rg-f-qp', '/query');
+  const fHP = field('体检路径', 'rg-f-hp', '/health');
+  const fCol = field('collection', 'rg-f-col', '可空：你的库里想查哪个集合');
+  const fTop = field('条数 topK', 'rg-f-top', '8');
+  const fCmd = field('本地命令（可选）', 'rg-f-cmd', '例：node D:\\myrag\\query.mjs');
+  const saveRow = el('div', 'rg-saverow');
+  const bSave = el('button', 'rg-btn rg-btn-save', '保存到 外壳\\data\\rag.json');
+  const saveTip = el('div', 'rg-hint', '约定：POST {queryPath} 收 {query,topK,collection}，回 {hits:[{text,score,source}]}。命令模式 stdin/stdout 用同一个 JSON 形状。');
+  saveRow.appendChild(bSave);
+  form.appendChild(saveRow);
+  form.appendChild(saveTip);
+  body.appendChild(form);
+
+  // ---- 提问区 ----
+  const bar = el('div', 'rg-bar');
+  const qin = el('input', 'rg-q');
+  qin.placeholder = '问点什么…（Enter 检索；Ctrl+Enter 也行）';
+  const bGo = el('button', 'rg-btn rg-btn-go', '检索');
+  bar.appendChild(qin);
+  bar.appendChild(bGo);
+  body.appendChild(bar);
+
+  const list = el('div', 'rg-list');
+  body.appendChild(list);
+  const foot = el('div', 'rg-foot', '');
+  body.appendChild(foot);
+
+  let cfg = null;
+  function setState(kind, text) {
+    dot.className = 'rg-dot' + (kind ? (' ' + kind) : '');
+    status.textContent = text;
+  }
+  function paintCfg(c) {
+    cfg = c || {};
+    if (!cfg.configured) {
+      setState('off', '未配置 —— 点右上「⚙ 设置」填服务地址或命令');
+    } else if (cfg.cmd) {
+      setState('on', '本地命令模式：' + cfg.cmd.slice(0, 60));
+    } else {
+      setState('on', cfg.baseUrl + (cfg.collection ? ('  ·  集合 ' + cfg.collection) : '') + '  ·  topK ' + cfg.topK);
+    }
+    fBase.value = cfg.baseUrl || '';
+    fKey.value = cfg.apiKey || '';
+    fQP.value = cfg.queryPath || '/query';
+    fHP.value = cfg.healthPath || '/health';
+    fCol.value = cfg.collection || '';
+    fTop.value = String(cfg.topK || 8);
+    fCmd.value = cfg.cmd || '';
+    bGo.disabled = !cfg.configured;
+  }
+  function loadCfg() {
+    if (!A) { setState('bad', '这个壳没有 rag 通道（主进程没重启？）'); return Promise.resolve(null); }
+    return Promise.resolve(A.config()).then(function (r) {
+      const c = (r && (r.config || r)) || {};
+      paintCfg(c);
+      return c;
+    }).catch(function (e) { setState('bad', '读配置失败：' + ((e && e.message) || e)); return null; });
+  }
+
+  bCfg.addEventListener('click', function () {
+    const on = form.style.display !== 'none';
+    form.style.display = on ? 'none' : '';
+  });
+
+  bSave.addEventListener('click', function () {
+    if (!A) return;
+    bSave.disabled = true;
+    Promise.resolve(A.save({
+      baseUrl: fBase.value.trim(), apiKey: fKey.value.trim(),
+      queryPath: fQP.value.trim() || '/query', healthPath: fHP.value.trim() || '/health',
+      collection: fCol.value.trim(), topK: Number(fTop.value) || 8,
+      cmd: fCmd.value.trim()
+    })).then(function (r) {
+      bSave.disabled = false;
+      if (r && r.ok) { paintCfg(r.config); form.style.display = 'none'; foot.textContent = '已保存到 外壳\\data\\rag.json'; }
+      else foot.textContent = '保存失败：' + ((r && r.err) || '未知');
+    }).catch(function (e) { bSave.disabled = false; foot.textContent = '保存失败：' + ((e && e.message) || e); });
+  });
+
+  bPing.addEventListener('click', function () {
+    if (!A) return;
+    if (!cfg || !cfg.configured) { setState('off', '还没配置，先点「⚙ 设置」'); return; }
+    bPing.disabled = true;
+    setState('wait', '正在体检…');
+    Promise.resolve(A.health()).then(function (r) {
+      bPing.disabled = false;
+      if (r && r.ok) setState('on', '通了 · ' + (r.via === 'cmd' ? '命令模式' : (r.url || '')) + ' · ' + (r.ms || 0) + 'ms');
+      else setState('bad', '连不上：' + ((r && (r.err || ('HTTP ' + r.status))) || '未知'));
+    }).catch(function (e) { bPing.disabled = false; setState('bad', '体检失败：' + ((e && e.message) || e)); });
+  });
+
+  function esc(s) { return String(s == null ? '' : s); }
+  function render(r) {
+    list.innerHTML = '';
+    if (!r || !r.ok) {
+      foot.textContent = '没查成：' + ((r && r.err) || '未知') + (r && r.text ? (' ｜ ' + String(r.text).slice(0, 160)) : '');
+      return;
+    }
+    const hits = r.hits || [];
+    foot.textContent = '命中 ' + hits.length + ' 条 · ' + (r.ms || 0) + 'ms · ' + (r.via === 'cmd' ? '命令模式' : (r.url || ''));
+    if (!hits.length) {
+      list.appendChild(el('div', 'rg-empty', '服务回了 200，但一条 hits 都没有。确认你的返回体里有 hits/results/matches/documents 之一。'));
+      return;
+    }
+    hits.forEach(function (h, i) {
+      const card = el('div', 'rg-hit');
+      const hh = el('div', 'rg-hh');
+      hh.appendChild(el('span', 'rg-idx', '#' + (i + 1)));
+      if (h.score != null) hh.appendChild(el('span', 'rg-score', Number(h.score).toFixed(3)));
+      if (h.source) hh.appendChild(el('span', 'rg-src', esc(h.source).slice(0, 90)));
+      card.appendChild(hh);
+      const tx = el('div', 'rg-ht', esc(h.text).slice(0, 1200));
+      card.appendChild(tx);
+      card.title = '点一下复制这条';
+      card.addEventListener('click', function () {
+        try { navigator.clipboard.writeText(esc(h.text)); foot.textContent = '已复制第 ' + (i + 1) + ' 条'; } catch (e) { /* ignore */ }
+      });
+      list.appendChild(card);
+    });
+  }
+
+  function run() {
+    const q = qin.value.trim();
+    if (!q) { qin.focus(); return; }
+    if (!A) return;
+    bGo.disabled = true;
+    foot.textContent = '检索中…';
+    setState('wait', '正在检索…');
+    Promise.resolve(A.query(q, {})).then(function (r) {
+      bGo.disabled = false;
+      render(r);
+      setState((r && r.ok) ? 'on' : 'bad', (r && r.ok) ? ('通了 · 命中 ' + ((r.hits || []).length) + ' 条 · ' + (r.ms || 0) + 'ms') : ('查询失败：' + ((r && r.err) || '未知')));
+    }).catch(function (e) {
+      bGo.disabled = false;
+      foot.textContent = '查询失败：' + ((e && e.message) || e);
+      setState('bad', '查询失败');
+    });
+  }
+  bGo.addEventListener('click', run);
+  qin.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); run(); }
+  });
+
+  foot.textContent = '这里是空的 —— 配好 RAG 之后问一句，命中的片段会按分数列出来。';
+  loadCfg().then(function (c) { if (c && c.configured) qin.focus(); });
+};
+
 renderers['plan-board'] = (body, meta) => {
   body.classList.add('pb');
   const DOW_CN = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];

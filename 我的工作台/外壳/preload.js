@@ -73,7 +73,17 @@ contextBridge.exposeInMainWorld('app', {
     getBg: () => ipcRenderer.invoke('skins:get-bg'),
     pickBg: () => ipcRenderer.invoke('skins:pick-bg'),
     setBgOpacity: (v) => ipcRenderer.invoke('skins:set-bg-opacity', v),
-    clearBg: () => ipcRenderer.invoke('skins:clear-bg')
+    clearBg: () => ipcRenderer.invoke('skins:clear-bg'),
+    // 卡片主题（2026-11-25）：每张卡片自己的背景，存 外壳\skins\_cards\<panelId>\{card.json,bg.*}
+    cards: () => ipcRenderer.invoke('skins:cards'),
+    pickCardBg: (panelId) => ipcRenderer.invoke('skins:pick-card-bg', panelId),
+    setCardOpacity: (panelId, v) => ipcRenderer.invoke('skins:set-card-opacity', panelId, v),
+    clearCardBg: (panelId) => ipcRenderer.invoke('skins:clear-card-bg', panelId)
+  },
+  // ---- 神经元：点开一条对话（2026-11-25）----
+  neuron: {
+    flow: (sessionId) => ipcRenderer.invoke('neuron:session-flow', sessionId),
+    messages: (sessionId, limit) => ipcRenderer.invoke('neuron:session-messages', sessionId, limit)
   },
   // ---- 设置：读取 / 打开 Harness 配置文件 ----
   settings: {

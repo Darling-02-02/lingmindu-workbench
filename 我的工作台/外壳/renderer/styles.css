@@ -5107,3 +5107,122 @@ body.wb-resizing { user-select: none; }
 .pb-empty-t { font-size: 12px; color: var(--text); }
 .pb-empty-s { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.6; }
 .pb-tail { margin-top: 6px; font-size: 10px; color: var(--text-dim); line-height: 1.6; }
+
+/* ══ 卡片主题（2026-11-25）：每张卡片自己的背景 ══
+   图存 外壳\skins\_cards\<panelId>\bg.<ext>，配置同目录 card.json。
+   结构：.panel > .card-bg-layer（背景图）+ .panel-head / .panel-body（抬到图层之上）。
+   为什么用真实 div 而不是 ::before/::after：那两个已经被"顶部发光细线"和边框装饰占了。 */
+.panel.has-card-theme {
+  /* 面板原本是 var(--bg-panel)（.86 不透明）—— 有背景图时压到 42%，图才看得见 */
+  background: rgba(10, 13, 18, .42);
+}
+html[data-theme="light"] .panel.has-card-theme { background: rgba(255, 255, 255, .46); }
+.panel > .card-bg-layer {
+  position: absolute; inset: 0; border-radius: inherit; overflow: hidden;
+  pointer-events: none; z-index: 0;
+  background-image: var(--card-bg, none);
+  background-position: center;
+  background-size: var(--card-size, cover);
+  background-repeat: var(--card-repeat, no-repeat);
+  opacity: var(--card-op, .35);
+}
+.panel.has-card-theme > .panel-head,
+.panel.has-card-theme > .panel-body { position: relative; z-index: 1; }
+/* 卡片有强调色时，hover 边框跟着它走（注意别把 --accent 指回自己，会自我引用失效） */
+.panel.has-card-theme { border-color: color-mix(in srgb, var(--card-accent, var(--border)) 45%, var(--border)); }
+
+/* 右键标题弹出的卡片主题菜单 */
+.card-theme-menu {
+  position: fixed; z-index: 9999; min-width: 250px; padding: 7px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .45);
+}
+.ctm-title {
+  font-size: 11px; color: var(--text-dim); padding: 3px 8px 6px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctm-item {
+  font: inherit; font-size: 12px; text-align: left; padding: 7px 9px; border-radius: 7px;
+  color: var(--text); background: transparent; border: 0; cursor: pointer;
+}
+.ctm-item:hover { background: var(--bg-panel-hover); color: var(--accent); }
+.ctm-tip { font-size: 10px; color: var(--text-dim); padding: 6px 8px 2px; line-height: 1.5; }
+
+/* ══ 神经元「点开一条对话」：流程拓扑 + 对话全文（2026-11-25）══
+   浮层挂在神经元面板 body 里（position:absolute inset:0），整块盖住画布但不离窗，
+   关掉就回到 3D 视图。两个 tab 共用同一外壳：🧭 流程拓扑（SVG 时间轴）/ 💬 对话全文。 */
+.kflow {
+  position: absolute; inset: 0; z-index: 8;
+  display: flex; flex-direction: column; min-height: 0;
+  background: rgba(9, 12, 18, .965);
+  border-radius: inherit;
+  backdrop-filter: blur(10px);
+}
+html[data-theme="light"] .kflow { background: rgba(250, 251, 253, .975); }
+.kflow-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-bottom: 1px solid var(--border);
+}
+.kflow-title {
+  font-size: 12.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto;
+}
+.kflow-tabs { display: flex; gap: 4px; flex: 0 0 auto; }
+.kflow-tab {
+  font: inherit; font-size: 11.5px; padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  color: var(--text-dim); background: transparent; border: 1px solid var(--border); white-space: nowrap;
+}
+.kflow-tab:hover { color: var(--text); border-color: var(--accent); }
+.kflow-tab.on { color: #9fc3ff; border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.kflow-x {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 1; color: var(--text-dim);
+  background: transparent; border: 1px solid var(--border);
+}
+.kflow-x:hover { color: var(--err); border-color: var(--err); }
+.kflow-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 12px 16px; }
+.kflow-load { padding: 16px 6px; font-size: 12px; color: var(--text-dim); line-height: 1.7; }
+.kflow-meta { display: flex; flex-wrap: wrap; gap: 5px 6px; margin-bottom: 8px; }
+.kflow-chip {
+  font-size: 10.5px; color: var(--text-dim); white-space: nowrap;
+  background: color-mix(in srgb, var(--bg-panel-hover) 70%, transparent);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+}
+.kflow-chip b { color: var(--text); font-weight: 600; }
+.kflow-path { font-size: 10px; color: rgba(160, 175, 200, .6); font-family: ui-monospace, Consolas, monospace; word-break: break-all; margin-bottom: 8px; }
+/* 上下文构成条 */
+.kflow-cwrap { margin: 4px 0 10px; }
+.kflow-clabel { font-size: 10.5px; color: var(--text-dim); margin-bottom: 4px; }
+.kflow-cbar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; border: 1px solid var(--border); background: var(--bg); }
+.kflow-cbar i { display: block; height: 100%; }
+.kflow-clegend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 5px; }
+.kflow-lg { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-dim); }
+.kflow-lg i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+/* SVG 拓扑 */
+.kflow-svg { width: 100%; }
+.kflow-svg svg { display: block; width: 100%; height: auto; }
+.kflow-node:hover rect { filter: brightness(1.25); }
+.kflow-hint { margin-top: 10px; font-size: 10.5px; color: var(--text-dim); line-height: 1.7; }
+/* 对话全文 */
+.kflow-msgs { display: flex; flex-direction: column; gap: 8px; }
+.kflow-msg {
+  border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg-panel) 70%, transparent);
+}
+.kflow-msg.u { border-left: 3px solid rgba(79, 140, 255, .8); }
+.kflow-msg.a { border-left: 3px solid rgba(127, 212, 168, .8); }
+.kflow-msg.jump { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.kflow-mh { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.kflow-mr { font-size: 11px; color: var(--text); font-weight: 600; }
+.kflow-mt { font-size: 10px; color: var(--text-dim); }
+.kflow-mb {
+  font-size: 12px; line-height: 1.68; color: var(--text); white-space: pre-wrap; word-break: break-word;
+  max-height: 320px; overflow: auto;
+}
+/* 神经元详情里那两个"点开对话"的按钮 */
+.kneu-go { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: #9fc3ff; }
+.kneu-go:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+

@@ -1027,6 +1027,28 @@ function initTheme() {
   });
 }
 
+// ---------- 卡片主题（2026-11-25）----------
+// 整窗背景只能有一张（skins\_user\bg.*），但同屏有七八张卡片。
+// 这里把"每张卡片自己的背景"一次性拉进来，塞进 window.__CARD_THEMES，
+// 具体套用由 renderers.js 的 applyCardTheme 负责（makePanel 里会读）。
+// 为什么要补一轮扫描：主题是异步到的，可能比面板建出来的时刻晚；晚到的就地对已有 DOM 补套一次。
+function loadCardThemes() {
+  const S = window.app && window.app.skins;
+  if (!S || !S.cards) return Promise.resolve({});
+  return S.cards().then((map) => {
+    window.__CARD_THEMES = (map && typeof map === 'object') ? map : {};
+    const U = kUtils();
+    if (U && U.applyCardTheme) {
+      document.querySelectorAll('.panel[data-panel-id]').forEach((p) => {
+        try { U.applyCardTheme(p, p.dataset.panelId); } catch (e) { /* ignore */ }
+      });
+    }
+    return window.__CARD_THEMES;
+  }).catch(() => ({}));
+}
+// 外部改了卡片图（菜单里选图 / 直接往目录丢文件）后刷新一次
+window.refreshCardThemes = loadCardThemes;
+
 // ---------- 余额实时显示（DeepSeek 平台；密钥只在主进程，渲染层只拿数值） ----------
 // 显示在场景栏状态点旁（标题栏那份已按需求移除）
 function initBalance() {
@@ -1331,6 +1353,7 @@ async function init() {
   }
   safeStep('标题栏', () => initTitlebar());
   safeStep('外观', () => initTheme());      // 深色 / 浅色 / 跟随系统
+  safeStep('卡片主题', () => loadCardThemes());  // 2026-11-25：每张卡片自己的背景图
   safeStep('余额', () => initBalance());    // DeepSeek 平台余额
   safeStep('加载页', () => initBoot());     // 引擎启动进度条 + 失败重试
   // 引擎就绪 → 自动加载主界面（不等用户点标签）；webview 加载完成 → 收起加载页

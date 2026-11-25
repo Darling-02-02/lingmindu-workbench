@@ -1,0 +1,23 @@
+{
+  "id": "huiye",
+  "name": "灰夜",
+  "nameEn": "Grey Night",
+  "author": "Darling",
+  "tagline": "整张图直接当工作台背景（来自 D:\\AAAlingmindu_workbench\\topic\\huiye.jpg）",
+  "accent": "#8fa6bf",
+  "bodyAttr": "data-dsh-huiye",
+  "order": 20,
+  "background": "bg.jpg",
+  "backgroundOpacity": 0.62,
+  "desktopIcon": "",
+  "vars": {
+    "--bg": "#0b0e13",
+    "--bg-panel": "rgba(16,19,26,.72)",
+    "--bg-panel-hover": "rgba(22,26,35,.82)",
+    "--border": "#2a303c",
+    "--text": "#e6eaf1",
+    "--text-dim": "#98a2b3",
+    "--accent": "#8fa6bf",
+    "--accent-soft": "rgba(143,166,191,.18)"
+  }
+}

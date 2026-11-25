@@ -11,6 +11,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 let DSH_PORT = String(process.env.DSH_PORT || '3083');
 let BASE = 'http://127.0.0.1:' + DSH_PORT;
@@ -315,10 +316,10 @@ function probe() {
 // 本机 3083 被 wslrelay.exe（WSL 端口转发）占着，背后是另一个 DSH，它照样回 401，
 // 于是旧版 probe() 认为「引擎已就绪」→ 复用外部引擎 → 没有 token → 界面永远停在失败。
 // 所以：端口在有监听时，必须用 token 真取到一次 200 页面才算可复用，否则换端口。
-function getRaw(url, cookie) {
+function getRaw(url, cookie, timeoutMs) {
   return new Promise(function (resolve) {
     const headers = cookie ? { cookie: cookie } : {};
-    const req = http.get(url, { timeout: 4000, headers: headers }, function (res) {
+    const req = http.get(url, { timeout: Number(timeoutMs) || 4000, headers: headers }, function (res) {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', function (c) { if (body.length < 200000) body += c; });
@@ -1623,6 +1624,113 @@ ipcMain.handle('skins:clear-bg', () => {
   } catch (e) { /* ignore */ }
   return { ok: true };
 });
+// ---- 卡片主题（2026-11-25）：每一张卡片（面板）一套自己的背景 ----
+// 为什么单开一层：整窗背景只能有一张（_user\bg.*），但同屏有 4~8 张卡片，
+//   用户希望「神经元一张星图、计划板一张纸纹、AI 窗口一张图」互不干扰。
+// 格式跟整窗主题**同一套**：一个目录一张图 + 一份 json，丢进目录就生效 ——
+//   外壳\skins\_cards\<panelId>\{ card.json, bg.<ext> }
+//   card.json: { panelId, name, file, opacity(0~1), accent, fit(cover|contain|repeat), updatedAt }
+// `_` 前缀 ⇒ listSkins() 会跳过，不会被当成一套整窗皮肤。
+const CARD_SKIN_DIR = path.join(SKINS_DIR, '_cards');
+const cardSkinDir = (pid) => path.join(CARD_SKIN_DIR, String(pid || '').replace(/[^\w.-]/g, '_'));
+
+function readCardTheme(pid) {
+  const dir = cardSkinDir(pid);
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dir, 'card.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const f = (j && j.file) ? path.join(dir, String(j.file)) : '';
+    if (!f || !fs.existsSync(f)) return null;
+    const op = Number(j.opacity);
+    return {
+      panelId: String(pid),
+      url: fileUrl(f),
+      file: f,
+      name: String(j.name || path.basename(f)),
+      opacity: Number.isFinite(op) ? Math.max(0, Math.min(1, op)) : 0.35,
+      accent: String(j.accent || ''),
+      fit: String(j.fit || 'cover'),
+    };
+  } catch (e) { return null; }
+}
+function listCardThemes() {
+  const out = {};
+  try {
+    for (const d of fs.readdirSync(CARD_SKIN_DIR, { withFileTypes: true })) {
+      if (!d || !d.isDirectory || !d.isDirectory()) continue;
+      const t = readCardTheme(d.name);
+      if (t) out[t.panelId] = t;
+    }
+  } catch (e) { /* 没这个目录 = 没有任何卡片主题，正常 */ }
+  return out;
+}
+function writeCardTheme(pid, patch) {
+  const dir = cardSkinDir(pid);
+  fs.mkdirSync(dir, { recursive: true });
+  const cur = readCardTheme(pid) || {};
+  const next = {
+    panelId: String(pid),
+    name: patch.name != null ? String(patch.name) : (cur.name || ''),
+    file: patch.file != null ? String(patch.file) : (cur.file ? path.basename(cur.file) : ''),
+    opacity: patch.opacity != null ? Math.max(0, Math.min(1, Number(patch.opacity))) : (cur.opacity != null ? cur.opacity : 0.35),
+    accent: patch.accent != null ? String(patch.accent) : (cur.accent || ''),
+    fit: patch.fit != null ? String(patch.fit) : (cur.fit || 'cover'),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(path.join(dir, 'card.json'), JSON.stringify(next, null, 2), 'utf8');
+  return readCardTheme(pid);
+}
+
+ipcMain.handle('skins:cards', () => listCardThemes());
+ipcMain.handle('skins:pick-card-bg', async (e, panelId) => {
+  const pid = String(panelId || '');
+  if (!pid) return { ok: false, err: 'panelId 为空' };
+  const w = BrowserWindow.fromWebContents(e.sender) || null;
+  let r = null;
+  try {
+    r = await dialog.showOpenDialog(w, {
+      title: '给这张卡片选一张背景图',
+      buttonLabel: '就用这张',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] }],
+    });
+  } catch (err) { return { ok: false, err: String(err.message || err) }; }
+  if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+  const src = r.filePaths[0];
+  const ext = ((path.extname(src) || '.png')).toLowerCase();
+  try {
+    const dir = cardSkinDir(pid);
+    fs.mkdirSync(dir, { recursive: true });
+    const want = 'bg' + ext;
+    for (const f of fs.readdirSync(dir)) {
+      if (/^bg\./i.test(f) && f.toLowerCase() !== want) { try { fs.unlinkSync(path.join(dir, f)); } catch (er) { /* ignore */ } }
+    }
+    const dst = path.join(dir, want);
+    fs.copyFileSync(src, dst);
+    const t = writeCardTheme(pid, { file: want, name: path.basename(src) });
+    log('[skin] 卡片主题：' + pid + ' ← ' + src);
+    return { ok: true, theme: t };
+  } catch (err) { return { ok: false, err: String(err.message || err) }; }
+});
+ipcMain.handle('skins:set-card-opacity', (e, panelId, v) => {
+  const pid = String(panelId || '');
+  const cur = readCardTheme(pid);
+  if (!cur) return { ok: false, err: '这张卡片还没有背景图' };
+  const t = writeCardTheme(pid, { opacity: Math.max(0, Math.min(1, Number(v) || 0.35)) });
+  return { ok: true, theme: t };
+});
+ipcMain.handle('skins:clear-card-bg', (e, panelId) => {
+  const dir = cardSkinDir(String(panelId || ''));
+  try {
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir)) {
+        if (/^bg(\.|$)/i.test(f) || f === 'card.json') { try { fs.unlinkSync(path.join(dir, f)); } catch (er) { /* ignore */ } }
+      }
+      try { fs.rmdirSync(dir); } catch (er) { /* 还有别的文件就留着 */ }
+    }
+  } catch (e2) { /* ignore */ }
+  return { ok: true };
+});
+
 // 场景标签顺序（拖拽换位）：渲染层拖完报上来，下次开机 / 其它窗口都读它
 ipcMain.handle('scenes:order:get', () => ({ saved: fs.existsSync(SCENE_ORDER_FILE), ids: readSceneTabOrder() }));
 ipcMain.handle('scenes:order:set', (e, ids) => saveSceneTabOrder(ids));
@@ -4113,11 +4221,33 @@ function planMirror(plan) {
 // dsh 的 /api/<method> 通道（和 外壳\scripts\sessions.mjs 同一套：先 token 换 cookie，再 client-request）
 // cookie 缓存：换一次要 1.4s，连着调两个 rpc 就白等一趟（2026-11-25 实测）。
 let dshCookieCache = '';
+let dshCookiePending = null;
+function dshCookie() {
+  if (dshCookieCache) return Promise.resolve(dshCookieCache);
+  if (dshCookiePending) return dshCookiePending;   // 并发只换一次
+  dshCookiePending = (async () => {
+    let tk = harnessToken;
+    if (!tk) { try { const f = readEngineToken(); if (f && f.token) tk = f.token; } catch (e) { /* 往下走 */ } }
+    if (!tk) throw new Error('没有可用的引擎 token');
+    let last = '';
+    for (let i = 0; i < 3; i++) {
+      const first = await getRaw(BASE + '/?token=' + encodeURIComponent(tk), '', 20000);
+      const raw = (first && first.headers && first.headers['set-cookie']) || [];
+      const cookie = raw.map((c) => String(c).split(';')[0]).join('; ');
+      if (cookie) { dshCookieCache = cookie; return cookie; }
+      last = first && first.status ? ('HTTP ' + first.status) : String((first && first.error) || '无响应');
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
+    throw new Error('拿不到会话 cookie（' + last + '）');
+  })().then((v) => { dshCookiePending = null; return v; }, (e) => { dshCookiePending = null; throw e; });
+  return dshCookiePending;
+}
 function dshPost(method, argsObj) {
   return new Promise((resolve) => {
-    let tk = harnessToken;
-    if (!tk) { try { const f = readEngineToken(); if (f && f.token) tk = f.token; } catch (e) { /* ignore */ } }
-    if (!tk) return resolve({ ok: false, err: '没有可用的引擎 token' });
+    // 2026-11-25：换 cookie 这条链路原来是 4 秒超时 + 一次机会，引擎正忙着序列化
+    //   session/list（325KB，1~2 秒）时 `GET /?token=` 会排队超时 → 报"拿不到会话 cookie"。
+    //   现在：20 秒超时、最多试 3 次、并发只换一次（dshCookiePending 去重）。
+    const DSH_MAX_BODY = 16 * 1024 * 1024;
     const send = (cookie) => {
       const body = JSON.stringify({ type: 'client-request', rpcId: 'wb1', method: method, payload: { args: argsObj } });
       const u = new URL(BASE + '/api/' + method);
@@ -4129,12 +4259,20 @@ function dshPost(method, argsObj) {
           'content-length': Buffer.byteLength(body),
         },
       }, (res) => {
-        let b = '';
+        const chunks = [];
+        let total = 0;
+        let truncated = false;
         res.setEncoding('utf8');
-        res.on('data', (c) => { if (b.length < 400000) b += c; });
+        res.on('data', (c) => {
+          total += c.length;
+          if (total > DSH_MAX_BODY) { truncated = true; return; }
+          chunks.push(c);
+        });
         res.on('end', () => {
           if (res.statusCode === 401 || res.statusCode === 403) dshCookieCache = '';   // cookie 过期，下次重换
-          try { resolve(JSON.parse(b)); } catch (e) { resolve({ ok: false, raw: b.slice(0, 400) }); }
+          if (truncated) return resolve({ ok: false, err: '响应超过 ' + (DSH_MAX_BODY / 1048576) + 'MB 被截断', bytes: total });
+          const b = chunks.join('');
+          try { resolve(JSON.parse(b)); } catch (e) { resolve({ ok: false, raw: b.slice(0, 400), bytes: b.length }); }
         });
       });
       req.on('error', (e) => resolve({ ok: false, err: String((e && e.message) || e) }));
@@ -4142,14 +4280,7 @@ function dshPost(method, argsObj) {
       req.write(body);
       req.end();
     };
-    if (dshCookieCache) return send(dshCookieCache);
-    getRaw(BASE + '/?token=' + encodeURIComponent(tk)).then((first) => {
-      const raw = (first.headers && first.headers['set-cookie']) || [];
-      const cookie = raw.map((c) => String(c).split(';')[0]).join('; ');
-      if (!cookie) return resolve({ ok: false, err: '拿不到会话 cookie' });
-      dshCookieCache = cookie;
-      send(cookie);
-    });
+    dshCookie().then((cookie) => send(cookie), (e) => resolve({ ok: false, err: String((e && e.message) || e) }));
   });
 }
 ipcMain.handle('plan:workspaces', () => ({ ok: true, file: WORKSPACE_FILE, items: planWsList(), mirror: PLAN_MIRROR }));
@@ -4172,6 +4303,183 @@ ipcMain.handle('plan:open-session', async (e, id) => {
   await dshPost('session/rename', { request: { sessionId: sid, title: title } });
   log('[plan] 已为计划 ' + it.id + ' 建会话 ' + sid + '（工作区 ' + ws + '）');
   return { ok: true, sessionId: sid, workspace: ws, title: title };
+});
+
+// ══════════════════════════════════════════════════════════════════
+// 神经元「点开一条对话」（2026-11-25）
+// ──────────────────────────────────────────────────────────────────
+// 两个通道，各管一件事：
+//   neuron:session-flow     流程拓扑 —— 轮次大纲 / 上下文构成 / 计时，走 dsh 的 session/list
+//   neuron:session-messages 对话全文 —— 真正去解 session.v4.jsonl.zstd（按需读盘，几 MB）
+// 为什么要两个：session/list 的 turnOutline 是引擎**自己截断过的**大纲（prompt 50 字、
+//   response 100 字），画拓扑正好——快、不碰磁盘；要看全文必须解归档。
+const SESS_ARCHIVE_DIR = path.join(DSH_DATA_DIR, 'sessions');
+const normSid = (s) => String(s || '').replace(/^session-/, '');
+// 多帧 zstd：dsh 的 session.v4.jsonl.zstd 是**追加写**的，一个文件里几千个独立帧
+// （13MB 的文件实测 10061 个 magic）。zstdDecompressSync 只解第一帧，流式解会
+// ZSTD_error_prefix_unknown ⇒ 只能按 magic 逐帧切开分别解。
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+function zstdFrames(buf) {
+  const idx = [];
+  let p = 0;
+  while (true) { const i = buf.indexOf(ZSTD_MAGIC, p); if (i < 0) break; idx.push(i); p = i + 4; }
+  let txt = '';
+  for (let k = 0; k < idx.length; k++) {
+    const seg = buf.subarray(idx[k], k + 1 < idx.length ? idx[k + 1] : buf.length);
+    try { txt += zlib.zstdDecompressSync(seg).toString('utf8'); } catch (e) { /* 截断帧 / 半帧跳过 */ }
+  }
+  return txt;
+}
+function findSessionFile(sid) {
+  const want = 'session-' + normSid(sid);
+  const root = SESS_ARCHIVE_DIR;
+  let buckets = [];
+  try { buckets = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch (e) { return ''; }
+  for (const b of buckets) {
+    const p = path.join(root, b.name, want, 'session.v4.jsonl.zstd');
+    if (fs.existsSync(p)) return p;
+  }
+  return '';
+}
+// 从 jsonl 里把「人说的话 / 助手说的最终答复」抽成有序条目。
+// 实测结构（拿那份 24 轮、1071 条 assistant/message 的归档核对的）：
+//   user/message.data.source.kind 有 user / time-context / runtime-context / skill-catalog / tool-jobs
+//     → 只有 kind:'user' 是真人打的字，其余都是引擎自己注入的（时间、技能目录、任务书）
+//   assistant/message.data.message.source.replayState.response.stopReason
+//     → 'toolUse'（1050 条）是工具调用之间的中间步骤，'stop'（22 条）才是**这一轮的最终答复**
+//   content[] 里 type 有 'text' 和 'reasoning'，两者都带 text 字段
+//     → 只要 'text'，否则会把模型的思考过程当正文显示
+const msgTextOf = (content) => {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
+      .map((c) => String(c.text))
+      .join('\n');
+  }
+  if (content && typeof content === 'object') return String(content.text || content.value || '');
+  return '';
+};
+
+// 会话清单缓存：session/list 一来就是全量 409 条 / 325KB / 1~2 秒，而且**没法按 id 过滤**
+// （试过 sessionId/sessionIds/ids/filter/limit/offset/detail 全被忽略）。
+// 点开第二条会话时没必要再拉一遍 —— 20 秒内复用同一份，神经元那边刷新会另外写新值。
+let sessListCache = { at: 0, items: null, err: '' };
+async function sessListItems(maxAgeMs) {
+  const now = Date.now();
+  const age = now - sessListCache.at;
+  if (sessListCache.items && age < (Number(maxAgeMs) || 20000)) return { items: sessListCache.items, cached: true, age };
+  const r = await dshPost('session/list', { _request: {} });
+  if (!r || !r.result || !r.result.value || !Array.isArray(r.result.value.items)) {
+    sessListCache = { at: now, items: null, err: JSON.stringify(r).slice(0, 200) };
+    return { items: null, err: sessListCache.err };
+  }
+  sessListCache = { at: now, items: r.result.value.items, err: '' };
+  return { items: sessListCache.items, cached: false, age: 0 };
+}
+
+ipcMain.handle('neuron:session-flow', async (e, sessionId) => {
+  const sid = String(sessionId || '');
+  if (!sid) return { ok: false, err: '没有 sessionId' };
+  const t0 = Date.now();
+  const got = await sessListItems(20000);
+  if (!got.items) return { ok: false, err: '引擎没给会话清单：' + (got.err || '') };
+  const items = got.items;
+  const want = normSid(sid);
+  const it = items.find((x) => normSid(x.sessionId) === want);
+  if (!it) return { ok: false, err: '引擎里找不到这条会话（可能已被清理）', total: items.length };
+  const v = (it.projections && it.projections.values) || {};
+  const tl = v.contextTimeline || {};
+  const t = Array.isArray(v.turnOutline) ? v.turnOutline : [];
+  // 每轮大概跨了多少步：用相邻两条 turnOutline 的 seq 差值（最后一个用 stats.steps 补齐）
+  const steps = Number((v.sessionStats && v.sessionStats.steps) || tl.counts && tl.counts.steps || 0);
+  const turns = t.map((x, i) => {
+    const next = t[i + 1];
+    const span = next && next.seq > x.seq ? next.seq - x.seq : (i === t.length - 1 ? Math.max(0, ((tl.last && tl.last.seq) || steps) - x.seq) : 0);
+    return {
+      turn: x.turn != null ? x.turn : i + 1,
+      seq: x.seq || 0,
+      span: span || 0,
+      prompt: String(x.prompt || ''),
+      response: String(x.response || ''),
+    };
+  });
+  return {
+    ok: true,
+    sessionId: it.sessionId,
+    title: String(v.title || ''),
+    cwd: String(it.cwd || v.workingDirectory || ''),
+    running: !!it.running,
+    blank: !!it.blank,
+    updatedAt: Number(it.updatedAt || 0),
+    archived: false,
+    turns,
+    stats: {
+      turns: Number((v.sessionStats && v.sessionStats.turns) || turns.length || 0),
+      steps,
+      toolCalls: Number(tl.toolCalls || 0),
+      humanInputs: Number(tl.humanInputs || 0),
+      answers: Number(tl.answers || 0),
+      llmMs: Number((v.sessionStats && v.sessionStats.llmMs) || 0),
+      toolMs: Number((v.sessionStats && v.sessionStats.toolMs) || 0),
+      ttftMs: Number((v.sessionStats && v.sessionStats.ttftMs) || 0),
+    },
+    context: tl.current || null,
+    counts: tl.counts || null,
+    timing: tl.timing || null,
+    model: (v.modelSelection && v.modelSelection.lastUsed) ? (v.modelSelection.lastUsed.provider + ' / ' + v.modelSelection.lastUsed.model) : String(tl.model || ''),
+    preset: String(v.agentPreset || ''),
+    days: (v.contextActivity && v.contextActivity.days) ? Object.keys(v.contextActivity.days) : [],
+    ms: Date.now() - t0,
+  };
+});
+
+ipcMain.handle('neuron:session-messages', async (e, sessionId, limit) => {
+  const sid = String(sessionId || '');
+  if (!sid) return { ok: false, err: '没有 sessionId' };
+  const file = findSessionFile(sid);
+  if (!file) return { ok: false, err: '找不到会话归档文件（引擎里可能有，但磁盘上没有）' };
+  let buf;
+  let size = 0;
+  try { size = fs.statSync(file).size; buf = fs.readFileSync(file); } catch (err) { return { ok: false, err: '读不了归档：' + String(err.message || err) }; }
+  const txt = zstdFrames(buf);
+  const max = Math.max(1, Math.min(400, Number(limit) || 60));
+  const out = [];
+  let turn = 0;
+  for (const line of txt.split('\n')) {
+    if (!line || line.charCodeAt(0) !== 123) continue;   // '{'
+    let o;
+    try { o = JSON.parse(line); } catch (err) { continue; }
+    const d = o.data || {};
+    if (o.type === 'user/message') {
+      const kind = String((d.source && d.source.kind) || '');
+      if (kind && kind !== 'user') continue;             // 时间注入 / 技能目录 / 任务书：不是人说的话
+      const s3 = msgTextOf(d.content);
+      if (!s3.trim()) continue;
+      if (/^(<\w[\w-]*[\s>]|系统提醒|System reminder|# AGENTS)/i.test(s3.trim())) continue;
+      turn = Number(d.turn || 0) || (turn + 1);
+      out.push({ turn, role: 'user', time: Number(o.time || 0), text: s3 });
+    } else if (o.type === 'assistant/message') {
+      const resp = d.message && d.message.source && d.message.source.replayState && d.message.source.replayState.response;
+      const stop = String((resp && resp.stopReason) || '');
+      if (stop && stop !== 'stop') continue;             // 'toolUse' = 中间步骤，跳过
+      const s3 = msgTextOf(d.message && d.message.content);
+      if (!s3.trim()) continue;
+      out.push({ turn: Number(d.turn || 0) || (turn || 1), role: 'assistant', step: Number(d.step || 0), time: Number(o.time || 0), text: s3 });
+    }
+  }
+  // 只回最近 max 条，但保留轮次编号（前端能看出"第几轮"）
+  const kept = out.slice(-max);
+  return {
+    ok: true,
+    file,
+    size,
+    total: out.length,
+    kept: kept.length,
+    truncated: kept.length < out.length,
+    turns: turn,
+    entries: kept,
+  };
 });
 
 // 已安装插件清单：扫描 dsh 项目的「插件」目录（每个子目录一个插件，含 package.json 元信息）

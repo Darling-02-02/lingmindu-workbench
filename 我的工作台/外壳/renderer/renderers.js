@@ -299,6 +299,126 @@ function panelHead(title, sub) {
   return head;
 }
 
+// ============ 卡片主题（2026-11-25）：每张卡片自己的背景 ============
+// 数据来自主进程 `skins:cards`（外壳\skins\_cards\<panelId>\{card.json,bg.*}），
+// renderer.js 在 init 时拉一次放进 window.__CARD_THEMES，这里只负责"套到 DOM 上"。
+// 为什么加这一层：整窗只能有一张背景（skins\_user\bg.*），可同屏 4~8 张卡片，
+//   用户要的是"神经元一张星图、计划板一张纸纹、AI 窗口一张图"互不干扰。
+// 注入点选在 makePanel 里（wrap.dataset.panelId 之后）—— 卡片是那儿建出来的，
+//   在这里套 class/变量，别的渲染器（neuron/flow/harness…）一行都不用改。
+function cardThemeOf(panelId) {
+  var all = (window && window.__CARD_THEMES) || {};
+  return all[String(panelId || '')] || null;
+}
+function applyCardTheme(wrap, panelId) {
+  var t = cardThemeOf(panelId);
+  if (!wrap) return;
+  var oldLayer = wrap.querySelector(':scope > .card-bg-layer');
+  if (!t || !t.url) {
+    wrap.classList.remove('has-card-theme');
+    ['--card-bg', '--card-op', '--card-size', '--card-repeat', '--card-accent'].forEach(function (k) { wrap.style.removeProperty(k); });
+    if (oldLayer) oldLayer.remove();
+    return;
+  }
+  wrap.classList.add('has-card-theme');
+  wrap.style.setProperty('--card-bg', 'url("' + String(t.url).replace(/"/g, '%22') + '")');
+  wrap.style.setProperty('--card-op', String(typeof t.opacity === 'number' ? t.opacity : 0.35));
+  var fit = String(t.fit || 'cover');
+  wrap.style.setProperty('--card-size', fit === 'repeat' ? 'auto' : fit);
+  wrap.style.setProperty('--card-repeat', fit === 'repeat' ? 'repeat' : 'no-repeat');
+  if (t.accent) wrap.style.setProperty('--card-accent', String(t.accent));
+  else wrap.style.removeProperty('--card-accent');
+  // 真实图层（不用 ::before/::after：那两个位置已经被"顶部发光细线"占了）
+  if (!oldLayer) {
+    var lay = el('div', 'card-bg-layer');
+    wrap.insertBefore(lay, wrap.firstChild);
+  }
+}
+// 右键标题 = 这张卡片的背景菜单（选图 / 浓淡 / 显示方式 / 去掉）。
+// 为什么挂右键而不是顶栏外观菜单：外观菜单是"整窗"的，卡片有七八张，在那儿列一堆子菜单更绕。
+function cardThemeMenu(ev, wrap, meta) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  var old = document.getElementById('kun-card-theme-menu');
+  if (old) old.remove();
+  var pid = String(meta.id || '');
+  var cur = cardThemeOf(pid);
+  var menu = el('div', 'card-theme-menu');
+  menu.id = 'kun-card-theme-menu';
+  var title = el('div', 'ctm-title', '卡片主题 · ' + String(meta.title || pid));
+  menu.appendChild(title);
+
+  var bPick = el('button', 'ctm-item', cur ? '🖼 换一张背景图…' : '🖼 选一张背景图…');
+  bPick.type = 'button';
+  bPick.addEventListener('click', function (e2) {
+    e2.stopPropagation();
+    var S = window.app && window.app.skins;
+    if (!S || !S.pickCardBg) return;
+    S.pickCardBg(pid).then(function (r) {
+      if (!r || !r.ok) return;
+      window.__CARD_THEMES = window.__CARD_THEMES || {};
+      window.__CARD_THEMES[pid] = r.theme;
+      applyCardTheme(wrap, pid);
+      menu.remove();
+    }).catch(function () { });
+  });
+  menu.appendChild(bPick);
+
+  if (cur) {
+    var steps = [0.15, 0.25, 0.35, 0.5, 0.7, 0.9];
+    var bOp = el('button', 'ctm-item', '◐ 浓淡：' + Math.round((cur.opacity || 0) * 100) + '%');
+    bOp.type = 'button';
+    bOp.title = '点一下换一档：' + steps.map(function (x) { return Math.round(x * 100) + '%'; }).join(' / ');
+    bOp.addEventListener('click', function (e2) {
+      e2.stopPropagation();
+      var next = steps[0];
+      for (var i = 0; i < steps.length; i++) if ((cur.opacity || 0) >= steps[i] - 0.02) next = steps[(i + 1) % steps.length];
+      cur.opacity = next;
+      window.__CARD_THEMES[pid] = cur;
+      applyCardTheme(wrap, pid);
+      bOp.textContent = '◐ 浓淡：' + Math.round(next * 100) + '%';
+      try { if (window.app && window.app.skins && window.app.skins.setCardOpacity) window.app.skins.setCardOpacity(pid, next); } catch (e) { /* ignore */ }
+    });
+    menu.appendChild(bOp);
+
+    var fits = ['cover', 'contain', 'repeat'];
+    var bFit = el('button', 'ctm-item', '⤢ 显示：' + ({ cover: '铺满裁切', contain: '整张装下', repeat: '平铺' }[cur.fit || 'cover'] || cur.fit));
+    bFit.type = 'button';
+    bFit.addEventListener('click', function (e2) {
+      e2.stopPropagation();
+      var i2 = fits.indexOf(cur.fit || 'cover');
+      cur.fit = fits[(i2 + 1) % fits.length];
+      window.__CARD_THEMES[pid] = cur;
+      applyCardTheme(wrap, pid);
+      bFit.textContent = '⤢ 显示：' + ({ cover: '铺满裁切', contain: '整张装下', repeat: '平铺' }[cur.fit] || cur.fit);
+    });
+    menu.appendChild(bFit);
+
+    var bClr = el('button', 'ctm-item', '✕ 去掉这张卡片的背景');
+    bClr.type = 'button';
+    bClr.addEventListener('click', function (e2) {
+      e2.stopPropagation();
+      try { if (window.app && window.app.skins && window.app.skins.clearCardBg) window.app.skins.clearCardBg(pid); } catch (e) { /* ignore */ }
+      if (window.__CARD_THEMES) delete window.__CARD_THEMES[pid];
+      applyCardTheme(wrap, pid);
+      menu.remove();
+    });
+    menu.appendChild(bClr);
+  }
+
+  menu.appendChild(el('div', 'ctm-tip', '图存 外壳\\skins\\_cards\\' + pid + '\\bg.jpg，也可以直接丢图进去'));
+  document.body.appendChild(menu);
+  var r = (ev.currentTarget && ev.currentTarget.getBoundingClientRect) ? ev.currentTarget.getBoundingClientRect() : { left: ev.clientX, bottom: ev.clientY };
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - 300, ev.clientX || r.left)) + 'px';
+  menu.style.top = Math.max(8, Math.min(window.innerHeight - 220, (ev.clientY || r.bottom) + 4)) + 'px';
+  var close = function (e3) {
+    if (menu.contains(e3.target)) return;
+    menu.remove();
+    document.removeEventListener('mousedown', close, true);
+  };
+  setTimeout(function () { document.addEventListener('mousedown', close, true); }, 0);
+}
+
 function makePanel(meta, idx) {
   const wrap = el('section', 'panel');
   // 面板元素上挂一份 meta：拖拽结束后的「排格 + 补洞」（packAutoGrid）要按它算坐标与跨度
@@ -328,7 +448,10 @@ function makePanel(meta, idx) {
   wrap.style.gridColumn = (meta.col ? meta.col + ' / span ' : 'span ') + (meta.w || 2);
   wrap.style.gridRow = (meta.row ? meta.row + ' / span ' : 'span ') + (meta.h || 2);
   wrap.dataset.panelId = meta.id;
+  // 卡片主题（2026-11-25）：这张卡片有自己的背景就套上；右键标题可以换图/调浓淡
+  applyCardTheme(wrap, meta.id);
   const head = panelHead(meta.title, meta.sub || '');
+  head.addEventListener('contextmenu', function (ev) { cardThemeMenu(ev, wrap, meta); });
   // 面板序号徽标（方便用户指定要修改哪个窗口）——两位补零，配合 .panel-badge 科技感样式
   const badge = el('span', 'panel-badge', String(idx + 1).padStart(2, '0'));
   badge.title = '面板序号';
@@ -11589,7 +11712,7 @@ function wireHeadNoDrag(node) {
 // ---- 暴露给外壳（renderer.js）的热更新接口 ----
 // 面板渲染器与工具函数挂到 window 上；刷新场景时 renderer.js 会带时间戳重新加载本文件，
 // 从而让 renderer 逻辑改动即时生效（不重载页面、不影响 harness webview 对话）。
-window.APP_RENDER_UTILS = { el, mktColor, GRID_COLS, panelHead, makePanel, attachResize, packAutoGrid, gridColsOf, initScenarioTabBar, decorateScenarioIcons, wireHeadNoDrag, wbPushLayout, wbResetLayout, wbPanels, wbBoxOf, panelLayoutGet, panelLayoutClear };
+window.APP_RENDER_UTILS = { el, mktColor, GRID_COLS, panelHead, makePanel, attachResize, packAutoGrid, gridColsOf, initScenarioTabBar, decorateScenarioIcons, wireHeadNoDrag, wbPushLayout, wbResetLayout, wbPanels, wbBoxOf, panelLayoutGet, panelLayoutClear, applyCardTheme, cardThemeMenu, cardThemeOf };
 window.APP_RENDERERS = renderers;
 
 // ============ 左上角品牌区：悬停显示版本信息卡 ============
@@ -18541,6 +18664,323 @@ renderers.neuron = (body, meta, head) => {
     stat.textContent = '这个版本没有打开通道';
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // 点开一条对话：流程拓扑 + 对话全文（2026-11-25）
+  // 用户原话：「神经网络中，可以点开对话，并且每个对话都整理对应的流程拓扑图，
+  //   要不然我看不到这个神经元网络有什么实际性的作用。」
+  // ⇒ 会话节点不再只是"一个点 + 一句摘要"：点开能看到
+  //   ① 流程拓扑：每轮一行，标出这一轮跨了多少步、上下文是怎么堆起来的；
+  //   ② 对话全文：解 zstd 归档，取最近 N 条人说/助手说的话。
+  // 数据来自主进程 neuron:session-flow / neuron:session-messages。
+  // ══════════════════════════════════════════════════════════════════
+  var NSVG = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(NSVG, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { e.setAttribute(k, String(attrs[k])); });
+    return e;
+  }
+  function wrapLines(s, per, max) {
+    var t2 = String(s || '').replace(/\s+/g, ' ').trim();
+    if (!t2) return ['（空）'];
+    var out = [];
+    for (var i = 0; i < t2.length && out.length < max; i += per) out.push(t2.slice(i, i + per));
+    if (t2.length > per * max) out[out.length - 1] = out[out.length - 1].slice(0, Math.max(1, per - 1)) + '…';
+    return out;
+  }
+  function svgText(parent, x, y, lines, color, size, weight) {
+    var tx = svgEl('text', { x: x, y: y, fill: color, 'font-size': size || 12, 'font-weight': weight || 400 });
+    tx.setAttribute('font-family', 'inherit');
+    lines.forEach(function (ln, i) {
+      var ts = svgEl('tspan', { x: x, dy: i === 0 ? 0 : (size || 12) + 3 });
+      ts.textContent = ln;
+      tx.appendChild(ts);
+    });
+    parent.appendChild(tx);
+    return tx;
+  }
+  var fmtK = function (n) { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n); };
+  var fmtMs = function (ms) { ms = Number(ms) || 0; if (!ms) return '—'; return ms >= 60000 ? (ms / 60000).toFixed(1) + ' 分' : (ms / 1000).toFixed(1) + ' 秒'; };
+  var fmtAt = function (ts) { if (!ts) return '—'; try { var d = new Date(Number(ts)); return d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'); } catch (e) { return '—'; } };
+
+  // 打开浮层（拓扑 / 全文 两页共用一个外壳）
+  function openSessionPane(sid, title, tab) {
+    var old = body.querySelector('.kflow');
+    if (old) old.remove();
+    var box = el('div', 'kflow');
+    var head = el('div', 'kflow-head');
+    head.appendChild(el('div', 'kflow-title', '📖 ' + String(title || sid)));
+    var tabs = el('div', 'kflow-tabs');
+    var bFlow = el('button', 'kflow-tab', '🧭 流程拓扑');
+    var bMsg = el('button', 'kflow-tab', '💬 对话全文');
+    bFlow.type = 'button'; bMsg.type = 'button';
+    if (tab !== 'msg') bFlow.classList.add('on'); else bMsg.classList.add('on');
+    tabs.appendChild(bFlow); tabs.appendChild(bMsg);
+    head.appendChild(tabs);
+    var bClose = el('button', 'kflow-x', '✕');
+    bClose.type = 'button';
+    bClose.title = '关掉（Esc）';
+    head.appendChild(bClose);
+    var pane = el('div', 'kflow-body');
+    box.appendChild(head); box.appendChild(pane);
+    body.appendChild(box);
+    var close = function () { box.remove(); document.removeEventListener('keydown', onEsc, true); };
+    var onEsc = function (ev) { if (ev.key === 'Escape') close(); };
+    document.addEventListener('keydown', onEsc, true);
+    bClose.addEventListener('click', close);
+    bFlow.addEventListener('click', function () { bFlow.classList.add('on'); bMsg.classList.remove('on'); paintFlow(pane, sid, title); });
+    bMsg.addEventListener('click', function () { bMsg.classList.add('on'); bFlow.classList.remove('on'); paintMsgs(pane, sid, title); });
+    if (tab === 'msg') paintMsgs(pane, sid, title); else paintFlow(pane, sid, title);
+  }
+
+  // ---- 一、流程拓扑 ----
+  function paintFlow(pane, sid, title) {
+    pane.innerHTML = '';
+    pane.appendChild(el('div', 'kflow-load', '正在向引擎取这条会话的流程…（session/list 全量约 325KB，1~2 秒）'));
+    var N = window.app && window.app.neuron;
+    if (!N || !N.flow) { pane.innerHTML = ''; pane.appendChild(el('div', 'kflow-load', '这个版本没有 neuron 通道（重启壳再试）')); return; }
+    N.flow(sid).then(function (r) {
+      pane.innerHTML = '';
+      if (!r || !r.ok) {
+        pane.appendChild(el('div', 'kflow-load', '取不到：' + ((r && r.err) || '未知原因')));
+        return;
+      }
+      // 顶部统计
+      var meta = el('div', 'kflow-meta');
+      var st = r.stats || {};
+      var chips = [
+        ['会话', String(r.sessionId || '').slice(0, 20) + '…'],
+        ['模型', r.model || '—'],
+        ['轮次', String(st.turns || 0)],
+        ['步骤', String(st.steps || 0)],
+        ['工具调用', String(st.toolCalls || 0)],
+        ['你的输入', String(st.humanInputs || 0)],
+        ['LLM 用时', fmtMs(st.llmMs)],
+        ['工具用时', fmtMs(st.toolMs)],
+        ['最后活动', fmtAt(r.updatedAt)],
+      ];
+      chips.forEach(function (kv) {
+        var c = el('span', 'kflow-chip');
+        c.appendChild(el('b', '', kv[0] + ' '));
+        c.appendChild(document.createTextNode(kv[1]));
+        meta.appendChild(c);
+      });
+      pane.appendChild(meta);
+      if (r.cwd) pane.appendChild(el('div', 'kflow-path', r.cwd));
+      // 上下文构成条（这一轮请求的 prompt 里各部分占多少）
+      if (r.context) {
+        var cx = r.context;
+        var parts = [
+          ['system', cx.system, '#7f8fa6'],
+          ['tools', cx.tools, '#4f8cff'],
+          ['skill', cx.skill, '#c084fc'],
+          ['inject', cx.inject, '#f0c674'],
+          ['user', cx.user, '#7fd4a8'],
+          ['assistant', cx.assistant, '#38bdf8'],
+          ['tool', cx.tool, '#fb923c'],
+        ];
+        var tot = parts.reduce(function (a, p) { return a + (Number(p[1]) || 0); }, 0) || 1;
+        var bar = el('div', 'kflow-cbar');
+        parts.forEach(function (p) {
+          if (!Number(p[1])) return;
+          var seg = el('i', '');
+          seg.style.width = ((Number(p[1]) / tot) * 100).toFixed(2) + '%';
+          seg.style.background = p[2];
+          seg.title = p[0] + ' ' + fmtK(p[1]) + ' tokens（' + ((Number(p[1]) / tot) * 100).toFixed(1) + '%）';
+          bar.appendChild(seg);
+        });
+        var cbWrap = el('div', 'kflow-cwrap');
+        cbWrap.appendChild(el('div', 'kflow-clabel', '当前上下文构成 · 共 ' + fmtK(tot) + ' tokens'));
+        cbWrap.appendChild(bar);
+        var legend = el('div', 'kflow-clegend');
+        parts.forEach(function (p) {
+          if (!Number(p[1])) return;
+          var lg = el('span', 'kflow-lg');
+          var dot = el('i', '');
+          dot.style.background = p[2];
+          lg.appendChild(dot);
+          lg.appendChild(document.createTextNode(p[0] + ' ' + fmtK(p[1])));
+          legend.appendChild(lg);
+        });
+        cbWrap.appendChild(legend);
+        pane.appendChild(cbWrap);
+      }
+
+      if (!r.turns || !r.turns.length) {
+        pane.appendChild(el('div', 'kflow-load',
+          '引擎没给这条会话的轮次大纲（turnOutline 为空）。' +
+          '通常是：这条会话还没跑过、或只跑了一步就被中断。切「💬 对话全文」能直接看内容。'));
+        return;
+      }
+
+      // ---- SVG 主图：纵向时间轴，每轮两框（你说 / 它答）+ 跨步数标注 ----
+      // 宽度按面板实际宽度走（1:1 渲染），否则 viewBox 固定 900 时会被放大 1.6 倍，
+      // 字号变巨大、整张图拉到 4000px 高，滚起来很累。
+      var paneW = Math.max(680, Math.min(1560, (pane.clientWidth || 900) - 6));
+      var W = paneW;
+      var PAD_T = 16;
+      var X0 = 40;              // 时间轴基线
+      var BX = 62;              // 框左边
+      var BW = W - BX - 78;     // 框宽（右边留 78px 写"跨 N 步"）
+      var PER = Math.max(34, Math.floor((BW - 26) / 11.6));   // 每行多少字（12px 中文 ≈ 11.6px/字）
+      var y = PAD_T;
+      var rows = [];
+      r.turns.forEach(function (t, i) {
+        var pl = wrapLines(t.prompt || '（无）', PER, 2);
+        var rl = wrapLines(t.response || '（无）', PER, 2);
+        var h1 = pl.length * 16 + 13;
+        var h2 = rl.length * 16 + 13;
+        var groupH = h1 + 8 + h2 + 20;
+        rows.push({ t: t, i: i, y: y, h1: h1, h2: h2, pl: pl, rl: rl, h: groupH });
+        y += groupH;
+      });
+      var H = y + 8;
+      var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, preserveAspectRatio: 'xMinYMin meet' });
+      // 箭头
+      var defs = svgEl('defs');
+      var mk = svgEl('marker', { id: 'kflow-arw', viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' });
+      mk.appendChild(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'rgba(140,160,190,.85)' }));
+      defs.appendChild(mk);
+      svg.appendChild(defs);
+
+      rows.forEach(function (row, idx) {
+        var t = row.t;
+        var topY = row.y;
+        var dotY = topY + row.h1 * 0.5 + 6;
+        // 时间轴竖线
+        if (idx > 0) svg.appendChild(svgEl('line', { x1: X0, y1: rows[idx - 1].dotY || 0, x2: X0, y2: dotY, stroke: 'rgba(140,160,190,.30)', 'stroke-width': 1.5 }));
+        row.dotY = dotY;
+        // 轮次圆点
+        svg.appendChild(svgEl('circle', { cx: X0, cy: dotY, r: 11, fill: 'rgba(79,140,255,.16)', stroke: 'rgba(79,140,255,.75)', 'stroke-width': 1.4 }));
+        var num = svgEl('text', { x: X0, y: dotY + 4, fill: '#bcd4ff', 'font-size': 11, 'text-anchor': 'middle' });
+        num.textContent = String(t.turn);
+        svg.appendChild(num);
+
+        // 你说
+        var g1 = svgEl('g', { class: 'kflow-node' });
+        g1.appendChild(svgEl('rect', { x: BX, y: topY, width: BW, height: row.h1, rx: 8, fill: 'rgba(79,140,255,.13)', stroke: 'rgba(79,140,255,.55)', 'stroke-width': 1 }));
+        svgText(g1, BX + 10, topY + 18, row.pl, '#dbe7ff', 12);
+        var tagU = svgEl('text', { x: BX + BW - 10, y: topY + 13, fill: 'rgba(160,190,240,.72)', 'font-size': 10, 'text-anchor': 'end' });
+        tagU.textContent = '你 · seq ' + t.seq;
+        g1.appendChild(tagU);
+        g1.style.cursor = 'pointer';
+        var tt1 = svgEl('title');
+        tt1.textContent = '【你】第 ' + t.turn + ' 轮\n' + (t.prompt || '');
+        g1.appendChild(tt1);
+        g1.addEventListener('click', function () { msgJump(pane, sid, title, t.turn, 'user'); });
+        svg.appendChild(g1);
+
+        // 箭头 down
+        svg.appendChild(svgEl('path', {
+          d: 'M ' + (BX + 22) + ' ' + (topY + row.h1 + 1) + ' L ' + (BX + 22) + ' ' + (topY + row.h1 + 7),
+          stroke: 'rgba(140,160,190,.85)', 'stroke-width': 1.6, 'marker-end': 'url(#kflow-arw)',
+        }));
+
+        // 它答
+        var g2 = svgEl('g', { class: 'kflow-node' });
+        g2.appendChild(svgEl('rect', { x: BX, y: topY + row.h1 + 8, width: BW, height: row.h2, rx: 8, fill: 'rgba(127,212,168,.10)', stroke: 'rgba(127,212,168,.45)', 'stroke-width': 1 }));
+        svgText(g2, BX + 10, topY + row.h1 + 8 + 18, row.rl, '#d8f3e5', 12);
+        g2.style.cursor = 'pointer';
+        var tt2 = svgEl('title');
+        tt2.textContent = '【它】第 ' + t.turn + ' 轮\n' + (t.response || '');
+        g2.appendChild(tt2);
+        g2.addEventListener('click', function () { msgJump(pane, sid, title, t.turn, 'assistant'); });
+        svg.appendChild(g2);
+
+        // 右侧：这一轮跨了多少事件
+        var spanTxt = t.span ? ('+' + t.span + ' 步') : (idx === rows.length - 1 ? '最后' : '');
+        if (spanTxt) {
+          var sp = svgEl('text', { x: W - 12, y: topY + row.h1 + 24, fill: 'rgba(160,175,200,.75)', 'font-size': 10.5, 'text-anchor': 'end' });
+          sp.textContent = spanTxt;
+          svg.appendChild(sp);
+        }
+      });
+      var holder = el('div', 'kflow-svg');
+      holder.appendChild(svg);
+      pane.appendChild(holder);
+      pane.appendChild(el('div', 'kflow-hint',
+        '节点 = 一轮对话（上框你说、下框它答），右侧 +N 步 = 这一轮和下一轮之间引擎跑了多少次事件（含工具调用）。' +
+        '点任一框跳到「对话全文」的对应位置，鼠标悬停看完整大纲。'));
+    }).catch(function (e2) {
+      pane.innerHTML = '';
+      pane.appendChild(el('div', 'kflow-load', '出错了：' + String((e2 && e2.message) || e2)));
+    });
+  }
+
+  // ---- 二、对话全文 ----
+  var msgCache = {};
+  function paintMsgs(pane, sid, title, jump) {
+    pane.innerHTML = '';
+    var N = window.app && window.app.neuron;
+    if (!N || !N.messages) { pane.appendChild(el('div', 'kflow-load', '这个版本没有 neuron 通道（重启壳再试）')); return; }
+    var cached = msgCache[sid];
+    if (cached) { renderMsgs(pane, sid, title, cached, jump); return; }
+    pane.appendChild(el('div', 'kflow-load', '正在解会话归档…（多帧 zstd，几 MB，可能要 1~2 秒）'));
+    N.messages(sid, 200).then(function (r) {
+      pane.innerHTML = '';
+      if (!r || !r.ok) { pane.appendChild(el('div', 'kflow-load', '读不到：' + ((r && r.err) || '未知原因'))); return; }
+      msgCache[sid] = r;
+      renderMsgs(pane, sid, title, r, jump);
+    }).catch(function (e2) {
+      pane.innerHTML = '';
+      pane.appendChild(el('div', 'kflow-load', '出错了：' + String((e2 && e2.message) || e2)));
+    });
+  }
+  function renderMsgs(pane, sid, title, r, jump) {
+    var bar = el('div', 'kflow-meta');
+    [['总条数', String(r.total)], ['已显示', String(r.kept)], ['总轮次', String(r.turns)], ['归档', (r.size / 1048576).toFixed(1) + ' MB']].forEach(function (kv) {
+      var c = el('span', 'kflow-chip');
+      c.appendChild(el('b', '', kv[0] + ' '));
+      c.appendChild(document.createTextNode(kv[1]));
+      bar.appendChild(c);
+    });
+    if (r.truncated) bar.appendChild(el('span', 'kflow-chip', '只显示最近 ' + r.kept + ' 条'));
+    pane.appendChild(bar);
+    pane.appendChild(el('div', 'kflow-path', r.file));
+    var list = el('div', 'kflow-msgs');
+    r.entries.forEach(function (en) {
+      var it = el('div', 'kflow-msg ' + (en.role === 'user' ? 'u' : 'a'));
+      it.dataset.turn = String(en.turn || '');
+      it.dataset.role = en.role || '';
+      var hd = el('div', 'kflow-mh');
+      hd.appendChild(el('span', 'kflow-mr', en.role === 'user' ? '🙋 你' : '🐟 它'));
+      hd.appendChild(el('span', 'kflow-mt', '第 ' + en.turn + ' 轮' + (en.time ? (' · ' + fmtAt(en.time)) : '')));
+      var bd = el('div', 'kflow-mb', en.text);
+      it.appendChild(hd); it.appendChild(bd);
+      list.appendChild(it);
+    });
+    pane.appendChild(list);
+    if (!r.entries.length) {
+      pane.appendChild(el('div', 'kflow-hint', r.size < 1024
+        ? '这条会话的归档几乎是空的（' + r.size + ' 字节）—— 通常是开了个头就没说话，或者内容已经被清理掉了。'
+        : '归档解出来 ' + r.total + ' 条，但没有一条是「你打字」或「它最终答复」—— 说明这条会话只跑了工具步骤，正文都在中间过程里。'));
+    }
+    if (jump) {
+      var target = null;
+      var all = list.querySelectorAll('.kflow-msg');
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].dataset.turn === String(jump.turn) && all[i].dataset.role === jump.role) { target = all[i]; break; }
+      }
+      if (!target) for (var k = 0; k < all.length; k++) { if (all[k].dataset.turn === String(jump.turn)) { target = all[k]; break; } }
+      if (target) {
+        target.classList.add('jump');
+        setTimeout(function () { try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { target.scrollIntoView(); } }, 60);
+      }
+    }
+  }
+  // 从拓扑里点某一轮 → 切到全文并跳到那条
+  function msgJump(pane, sid, title, turn, role) {
+    var box = body.querySelector('.kflow');
+    if (box) {
+      var tabs = box.querySelectorAll('.kflow-tab');
+      if (tabs[0]) tabs[0].classList.remove('on');
+      if (tabs[1]) tabs[1].classList.add('on');
+    }
+    paintMsgs(pane, sid, title, { turn: turn, role: role });
+  }
+
+  // 给外面（侧栏 / 计划面板 / 控制台调试）一个入口：按 sessionId 直接开同一个浮层，不用再造一套
+  try { window.__openSession = openSessionPane; } catch (e) { /* ignore */ }
+
   function showDetail(n) {
     if (!n) { detail.classList.remove('on'); return; }
     detail.innerHTML = '';
@@ -18622,6 +19062,27 @@ renderers.neuron = (body, meta, head) => {
     });
     row.appendChild(bOpen); row.appendChild(bReveal); row.appendChild(bCopy);
     detail.appendChild(row);
+    // 会话节点：再给两个"点开这条对话"的入口（2026-11-25）
+    if (n.sesInfo) {
+      var row2 = el('div', 'kneu-drow');
+      var goTitle = n.sesInfo.title || n.title || n.label || String(n.sesInfo.id || '');
+      var bF = el('button', 'kneu-btn kneu-go', '🧭 流程拓扑');
+      bF.type = 'button';
+      bF.title = '把这条会话的每一轮画成流程图（每轮跨多少步、上下文怎么长起来的）';
+      bF.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openSessionPane(String(n.sesInfo.id || ''), goTitle, 'flow');
+      });
+      var bM = el('button', 'kneu-btn kneu-go', '💬 对话全文');
+      bM.type = 'button';
+      bM.title = '解开这条会话的归档，看你跟它到底说了什么（最近 200 条）';
+      bM.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openSessionPane(String(n.sesInfo.id || ''), goTitle, 'msg');
+      });
+      row2.appendChild(bF); row2.appendChild(bM);
+      detail.appendChild(row2);
+    }
     detail.classList.add('on');
   }
 

@@ -35,6 +35,7 @@
 'use strict';
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -216,6 +217,13 @@ function buildOne(g, ws, opt) {
     return { key: key, id: ws.id, title: ws.title, path: ws.path, builtAt: 0, nodes: 0, edges: 0,
       files: 0, err: '这个目录里没有代码文件（只有文档/图片/数据），画不出结构图' };
   }
+  // 自动模式（--max-files）只画小项目：超大目录一次要吃十几分钟 CPU（实测 89370 个节点 819 秒），
+  // 放在后台自动跑等于把机器占死 —— 这种交给用户手动点「⚙ 现在画一张」或 --force。
+  if (!opt.force && opt.maxFiles && pre.files > opt.maxFiles) {
+    return { key: key, id: ws.id, title: ws.title, path: ws.path, builtAt: 0, nodes: 0, edges: 0,
+      files: pre.files, skipped: 'too-big',
+      err: '目录里有 ' + pre.files + ' 个代码文件，超过自动上限 ' + opt.maxFiles + '（--ws 名字 --force 才画）' };
+  }
   fs.mkdirSync(dir, { recursive: true });
 
   // ① 抽图（--code-only = 纯本地 AST，不调模型）
@@ -347,6 +355,11 @@ function main() {
   }
   if (!fs.existsSync(VENDOR)) fs.mkdirSync(VENDOR, { recursive: true });
 
+  // 后台画图不抢前台：把自己降到 Below Normal（Windows 上等价 /low）。
+  // 大项目会慢一点，但用户点什么都不会卡 —— 这是"开机被拉满"的直接解药之一。
+  try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch (e) { /* 平台不支持就算了 */ }
+  const maxFiles = Number(flag('max-files', 0)) || 0;
+
   // ---- 单个工作区 ----
   if (has('ws')) {
     const want = String(flag('ws', '')).trim();
@@ -358,7 +371,7 @@ function main() {
     }
     const w = hit[0];
     console.log('[结构图] ' + w.title + ' → ' + w.path);
-    const meta = buildOne(g, w, { force: has('force') });
+    const meta = buildOne(g, w, { force: has('force'), maxFiles: maxFiles });
     console.log(JSON.stringify(meta, null, 2));
     return meta.err ? 1 : 0;
   }
@@ -368,7 +381,7 @@ function main() {
     const p = path.resolve(String(flag('path', '')));
     const w = { id: 'manual', title: String(flag('name', path.basename(p))), path: p, key: keyOf(String(flag('name', path.basename(p))), 'manual') };
     console.log('[结构图] ' + w.title + ' → ' + p);
-    const meta = buildOne(g, w, { force: has('force') });
+    const meta = buildOne(g, w, { force: has('force'), maxFiles: maxFiles });
     console.log(JSON.stringify(meta, null, 2));
     return meta.err ? 1 : 0;
   }
@@ -383,7 +396,7 @@ function main() {
   for (const w of todo) {
     const t = Date.now();
     process.stdout.write('  · ' + pad(w.title, 22));
-    const meta = buildOne(g, w, { force: has('force') });
+    const meta = buildOne(g, w, { force: has('force'), maxFiles: maxFiles });
     results.push(meta);
     if (meta.err) { failN++; console.log('✗ ' + meta.err.slice(0, 70)); }
     else { okN++; console.log('✓ ' + meta.nodes + ' 节点 / ' + meta.edges + ' 边 / ' + Math.round((Date.now() - t) / 1000) + 's'); }

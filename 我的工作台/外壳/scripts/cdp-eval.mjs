@@ -5,10 +5,18 @@ import fs from 'node:fs';
 const rawArg = process.argv[2];
 const expr = rawArg && rawArg.startsWith('@') ? fs.readFileSync(rawArg.slice(1), 'utf8') : rawArg;
 async function pickPort() {
-  for (const p of [9226, 9225, 9224, 9223, 9222]) {
-    try { const r = await fetch('http://127.0.0.1:' + p + '/json/version'); if (r.ok) return p; } catch (e) { /* 试下一个 */ }
+  let pref = 0;
+  try {
+    const fs = await import('node:fs');
+    const f = new URL('../data/debug-port.txt', import.meta.url);
+    if (fs.existsSync(f)) pref = Number(String(fs.readFileSync(f, 'utf8')).trim()) || 0;
+  } catch (e) { /* no file, just scan */ }
+  const ports = pref ? [pref] : [];
+  for (let p = 9226; p <= 9240; p += 1) if (p !== pref) ports.push(p);
+  for (const p of ports) {
+    try { const r = await fetch('http://127.0.0.1:' + p + '/json/version', { signal: AbortSignal.timeout(1200) }); if (r.ok) return p; } catch (e) { /* next */ }
   }
-  return 9224;
+  return 9226;
 }
 const port = Number(process.argv[3] || 0) || await pickPort();
 const typeWanted = process.argv[4] || 'page';

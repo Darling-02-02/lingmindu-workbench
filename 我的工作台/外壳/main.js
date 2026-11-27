@@ -3,7 +3,7 @@
 // 场景 1：<客户> OA 系统运维（本地渲染）
 // 场景 2：大A / 美股分析（本地渲染）
 // 设计：壳与 Harness 解耦——只通过 HTTP+token 认识它；场景配置在 scenarios/ 下。
-const { app, BrowserWindow, dialog, shell, ipcMain, webContents, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, webContents, nativeImage, screen, powerMonitor } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -2598,15 +2598,35 @@ ipcMain.handle('projects:tree', (e, dir, opt) => {
   return { ok: true, root: root, name: path.basename(root), depth: maxDepth, count: n, truncated: truncated, children: children };
 });
 
-// 自动重建：启动后一分半跑一次 --all --stale，12 小时内只跑一次（写 .last-auto）
-// 之所以延迟：先让界面和引擎起来，别跟启动阶段抢磁盘 IO
+// 自动重建：启动后 5 分钟跑一次 `--all --stale --max-files 800`，12 小时内只跑一次（写 .last-auto）。
+// 为什么这么小心（2026-11-27 用户反馈"刚开机 CPU 直接拉满"）：
+//   ①开机时引擎自己就要 seed 一份会话，本来就在抢 CPU，图画得越早越添乱 ⇒ 推迟到 5 分钟；
+//   ②只有系统空闲 ≥3 分钟才动手，用户正在用就先等着（15 分钟后再看）；
+//   ③自动模式只画 800 个代码文件以内的小项目 —— 那个 8.9 万节点的目录要 819 秒单核，
+//     点在「⚙ 现在画一张」时用户知道自己在等，后台偷偷跑就是要命；
+//   ④脚本自己会降到 Below Normal 优先级（`工具\项目结构图.mjs` 里的 os.setPriority），不抢前台。
+const MAP_AUTO_DELAY_MS = 5 * 60 * 1000;
+const MAP_AUTO_RETRY_MS = 15 * 60 * 1000;
+const MAP_AUTO_IDLE_SEC = 180;
+const MAP_AUTO_MAX_FILES = 800;
 async function autoBuildMaps() {
   try {
     if (!fs.existsSync(MAP_ROOT_DIR)) fs.mkdirSync(MAP_ROOT_DIR, { recursive: true });
     let last = 0;
     try { last = Number(fs.readFileSync(MAP_LAST_AUTO, 'utf8').trim()) || 0; } catch (err) { /* 第一次 */ }
     if (last && Date.now() - last < 12 * 3600 * 1000) return;
-    const r = await runMapScript(['--all', '--stale']);
+    // 用户在用就先不跑（getSystemIdleTime 返回秒；有的平台拿不到就当成空闲）
+    let idle = MAP_AUTO_IDLE_SEC;
+    try { idle = powerMonitor.getSystemIdleTime(); } catch (err) { /* ignore */ }
+    if (idle < MAP_AUTO_IDLE_SEC) {
+      try {
+        fs.appendFileSync(path.join(MAP_ROOT_DIR, 'auto.log'),
+          new Date().toLocaleString('sv-SE') + '  跳过：机器有人在用（空闲 ' + idle + ' 秒），15 分钟后再看\n', 'utf8');
+      } catch (err) { /* ignore */ }
+      setTimeout(autoBuildMaps, MAP_AUTO_RETRY_MS);
+      return;
+    }
+    const r = await runMapScript(['--all', '--stale', '--max-files', String(MAP_AUTO_MAX_FILES)]);
     try { fs.writeFileSync(MAP_LAST_AUTO, String(Date.now()), 'utf8'); } catch (err) { /* ignore */ }
     try {
       fs.appendFileSync(path.join(MAP_ROOT_DIR, 'auto.log'),
@@ -2615,7 +2635,7 @@ async function autoBuildMaps() {
     } catch (err) { /* ignore */ }
   } catch (err) { /* 自动出图失败不该影响工作台使用 */ }
 }
-setTimeout(autoBuildMaps, 90 * 1000);
+setTimeout(autoBuildMaps, MAP_AUTO_DELAY_MS);
 
 // ---- 程序开发场景：把项目里的 H5 用「手机尺寸独立窗口」打开（400×830，独立持久会话 → 登录能记住）----
 // 场景 json 的 code-urls 面板里给条目加 "phone": true 就会出现 📱 按钮；换项目只改 json。

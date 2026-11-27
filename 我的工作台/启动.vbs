@@ -26,16 +26,33 @@ If Err.Number = 0 Then engineAlive = True
 Err.Clear
 Set http = Nothing
 
-Dim ports, pi
-ports = Array(9226, 9225, 9224, 9223)
-For pi = 0 To UBound(ports)
-  Set http2 = CreateObject("MSXML2.ServerXMLHTTP.6.0")
-  http2.setTimeouts 1500, 1500, 2000, 2500
-  http2.Open "GET", "http://127.0.0.1:" & ports(pi) & "/json/version", False
-  http2.Send
-  If Err.Number = 0 Then shellAlive = True
-  Err.Clear
-  Set http2 = Nothing
+' 2026-11-27: the CDP port is no longer fixed -- launch-inner.cmd picks a free one and writes
+'   外壳\data\debug-port.txt. Try that first, then walk 9227..9240 (force-kills leave zombie
+'   LISTEN sockets owned by dead PIDs, so a fixed port list rots over time).
+Dim dpf, ts, prefPort, pi, tryPort
+dpf = root & "\外壳\data\debug-port.txt"
+prefPort = 0
+If fso.FileExists(dpf) Then
+  Set ts = fso.OpenTextFile(dpf, 1, False)
+  If Not ts.AtEndOfStream Then prefPort = CLng(Trim(ts.ReadLine()))
+  ts.Close
+  Set ts = Nothing
+End If
+For pi = 0 To 14
+  If pi = 0 Then
+    tryPort = prefPort
+  Else
+    tryPort = 9226 + pi
+  End If
+  If tryPort > 0 Then
+    Set http2 = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    http2.setTimeouts 1500, 1500, 2000, 2500
+    http2.Open "GET", "http://127.0.0.1:" & tryPort & "/json/version", False
+    http2.Send
+    If Err.Number = 0 Then shellAlive = True
+    Err.Clear
+    Set http2 = Nothing
+  End If
   If shellAlive Then Exit For
 Next
 On Error GoTo 0
